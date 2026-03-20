@@ -1,0 +1,374 @@
+import { useState } from 'react'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import {
+  getPurchaseOrders, createPurchaseOrder, confirmPurchaseOrder, cancelPurchaseOrder,
+} from '../api/purchaseOrders'
+import { getInventory } from '../api/inventory'
+import type {
+  PurchaseOrder, PurchaseOrderStatus, PurchaseOrderItemRequest, UnitType,
+} from '../types'
+import { Plus, X, CheckCircle, XCircle, Eye, ShoppingBag, Trash2 } from 'lucide-react'
+
+const UNIT_LABELS: Record<string, string> = {
+  PIECE: 'pza', GRAM: 'g', MILLILITER: 'ml',
+  KILOGRAM: 'kg', LITER: 'L',
+}
+
+const STATUS_CONFIG: Record<PurchaseOrderStatus, { label: string; className: string }> = {
+  DRAFT:     { label: 'Borrador',   className: 'bg-amber-100 text-amber-700' },
+  CONFIRMED: { label: 'Confirmado', className: 'bg-green-100 text-green-700' },
+  CANCELLED: { label: 'Cancelado',  className: 'bg-slate-100 text-slate-500' },
+}
+
+const fmt = (n: number) =>
+  n.toLocaleString('es-MX', { style: 'currency', currency: 'MXN' })
+
+// ── Empty line for the create form ─────────────────────────────────────────────
+const emptyLine = (): PurchaseOrderItemRequest => ({
+  inventoryItemId: 0, quantity: 0, unitCost: 0,
+})
+
+export default function PurchaseOrders() {
+  const qc = useQueryClient()
+
+  const { data: orders = [], isLoading } = useQuery({
+    queryKey: ['purchase-orders'],
+    queryFn: getPurchaseOrders,
+  })
+
+  const { data: inventoryItems = [] } = useQuery({
+    queryKey: ['inventory'],
+    queryFn: getInventory,
+  })
+
+  // ── Modals state ─────────────────────────────────────────────────────────────
+  const [createOpen, setCreateOpen] = useState(false)
+  const [detailOrder, setDetailOrder] = useState<PurchaseOrder | null>(null)
+
+  // ── Create form state ─────────────────────────────────────────────────────────
+  const [supplier, setSupplier] = useState('')
+  const [notes, setNotes]       = useState('')
+  const [lines, setLines]       = useState<PurchaseOrderItemRequest[]>([emptyLine()])
+
+  // ── Mutations ─────────────────────────────────────────────────────────────────
+  const createMut = useMutation({
+    mutationFn: () => createPurchaseOrder({ supplier: supplier || undefined, notes: notes || undefined, items: lines }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['purchase-orders'] })
+      resetCreate()
+    },
+  })
+
+  const confirmMut = useMutation({
+    mutationFn: (id: number) => confirmPurchaseOrder(id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['purchase-orders'] })
+      qc.invalidateQueries({ queryKey: ['inventory'] })
+      setDetailOrder(null)
+    },
+  })
+
+  const cancelMut = useMutation({
+    mutationFn: (id: number) => cancelPurchaseOrder(id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['purchase-orders'] })
+      setDetailOrder(null)
+    },
+  })
+
+  // ── Helpers ───────────────────────────────────────────────────────────────────
+  const resetCreate = () => {
+    setSupplier(''); setNotes(''); setLines([emptyLine()]); setCreateOpen(false)
+  }
+
+  const updateLine = (i: number, patch: Partial<PurchaseOrderItemRequest>) =>
+    setLines((prev) => prev.map((l, idx) => idx === i ? { ...l, ...patch } : l))
+
+  const removeLine = (i: number) =>
+    setLines((prev) => prev.filter((_, idx) => idx !== i))
+
+  const totalAmount = lines.reduce((sum, l) => sum + (l.quantity * l.unitCost || 0), 0)
+
+  const canCreate = lines.length > 0 && lines.every(
+    (l) => l.inventoryItemId > 0 && l.quantity > 0 && l.unitCost > 0,
+  )
+
+  if (isLoading) return <div className="text-slate-400 text-sm">Cargando...</div>
+
+  return (
+    <div className="space-y-4">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <ShoppingBag size={20} className="text-violet-600" />
+          <h2 className="text-xl font-bold text-slate-800">Resurtidos</h2>
+        </div>
+        <button
+          onClick={() => setCreateOpen(true)}
+          className="flex items-center gap-2 bg-violet-600 hover:bg-violet-700 text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors"
+        >
+          <Plus size={16} /> Nuevo resurtido
+        </button>
+      </div>
+
+      {/* Orders list */}
+      <div className="space-y-3">
+        {orders.map((order) => {
+          const cfg = STATUS_CONFIG[order.status]
+          return (
+            <div key={order.id} className="bg-white rounded-xl border border-slate-200 p-4">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="font-semibold text-slate-800 text-sm">{order.folio}</span>
+                    <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${cfg.className}`}>
+                      {cfg.label}
+                    </span>
+                  </div>
+                  {order.supplier && (
+                    <p className="text-xs text-slate-500 mt-0.5">Proveedor: {order.supplier}</p>
+                  )}
+                  <p className="text-xs text-slate-400 mt-0.5">
+                    {new Date(order.createdAt).toLocaleString('es-MX')} — {order.items.length} insumo{order.items.length !== 1 ? 's' : ''}
+                  </p>
+                  {order.createdByName && (
+                    <p className="text-xs text-slate-400 mt-0.5">Creado por: <span className="font-medium text-slate-500">{order.createdByName}</span></p>
+                  )}
+                </div>
+                <div className="text-right shrink-0">
+                  <p className="font-bold text-slate-800">{fmt(order.totalAmount)}</p>
+                </div>
+              </div>
+
+              <div className="flex gap-2 mt-3">
+                <button
+                  onClick={() => setDetailOrder(order)}
+                  className="flex items-center gap-1 text-xs bg-slate-50 hover:bg-slate-100 text-slate-600 font-medium py-1.5 px-3 rounded-lg transition-colors"
+                >
+                  <Eye size={13} /> Ver detalle
+                </button>
+                {order.status === 'DRAFT' && (
+                  <>
+                    <button
+                      onClick={() => confirmMut.mutate(order.id)}
+                      disabled={confirmMut.isPending}
+                      className="flex items-center gap-1 text-xs bg-green-50 hover:bg-green-100 text-green-700 font-medium py-1.5 px-3 rounded-lg transition-colors disabled:opacity-50"
+                    >
+                      <CheckCircle size={13} /> Confirmar
+                    </button>
+                    <button
+                      onClick={() => cancelMut.mutate(order.id)}
+                      disabled={cancelMut.isPending}
+                      className="flex items-center gap-1 text-xs bg-red-50 hover:bg-red-100 text-red-600 font-medium py-1.5 px-3 rounded-lg transition-colors disabled:opacity-50"
+                    >
+                      <XCircle size={13} /> Cancelar
+                    </button>
+                  </>
+                )}
+              </div>
+            </div>
+          )
+        })}
+
+        {orders.length === 0 && (
+          <div className="text-center py-16 text-slate-400 text-sm">
+            No hay resurtidos registrados.
+          </div>
+        )}
+      </div>
+
+      {/* ── Create Modal ─────────────────────────────────────────────────────── */}
+      {createOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50">
+          <div className="bg-white rounded-2xl p-6 w-full max-w-2xl shadow-xl max-h-[90vh] flex flex-col">
+            <div className="flex items-center justify-between mb-5">
+              <h3 className="font-bold text-slate-800">Nuevo resurtido</h3>
+              <button onClick={resetCreate}><X size={20} className="text-slate-400" /></button>
+            </div>
+
+            <div className="overflow-y-auto flex-1 space-y-5 pr-1">
+              {/* Proveedor y notas */}
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-sm font-medium text-slate-700 block mb-1">Proveedor</label>
+                  <input
+                    value={supplier}
+                    onChange={(e) => setSupplier(e.target.value)}
+                    placeholder="Nombre del proveedor (opcional)"
+                    className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-violet-500"
+                  />
+                </div>
+                <div>
+                  <label className="text-sm font-medium text-slate-700 block mb-1">Notas</label>
+                  <input
+                    value={notes}
+                    onChange={(e) => setNotes(e.target.value)}
+                    placeholder="Opcional"
+                    className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-violet-500"
+                  />
+                </div>
+              </div>
+
+              {/* Líneas de insumos */}
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <label className="text-sm font-medium text-slate-700">Insumos</label>
+                  <button
+                    onClick={() => setLines((prev) => [...prev, emptyLine()])}
+                    className="flex items-center gap-1 text-xs text-violet-600 hover:text-violet-700 font-medium"
+                  >
+                    <Plus size={13} /> Agregar insumo
+                  </button>
+                </div>
+
+                <div className="space-y-2">
+                  {/* Header */}
+                  <div className="grid grid-cols-[1fr_90px_90px_80px_32px] gap-2 text-xs text-slate-400 px-1">
+                    <span>Insumo</span><span>Cantidad</span><span>Costo unit.</span><span className="text-right">Total</span><span />
+                  </div>
+
+                  {lines.map((line, i) => {
+                    const lineTotal = (line.quantity * line.unitCost) || 0
+                    const selectedItem = inventoryItems.find((it) => it.id === line.inventoryItemId)
+                    return (
+                      <div key={i} className="grid grid-cols-[1fr_90px_90px_80px_32px] gap-2 items-center">
+                        <select
+                          value={line.inventoryItemId || ''}
+                          onChange={(e) => updateLine(i, { inventoryItemId: Number(e.target.value) })}
+                          className="border border-slate-300 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:border-violet-500"
+                        >
+                          <option value="">— Seleccionar —</option>
+                          {inventoryItems.map((it) => (
+                            <option key={it.id} value={it.id}>
+                              {it.name} ({UNIT_LABELS[it.unitType] ?? it.unitType})
+                            </option>
+                          ))}
+                        </select>
+                        <input
+                          type="number" min="0" step="0.001"
+                          value={line.quantity || ''}
+                          onChange={(e) => updateLine(i, { quantity: parseFloat(e.target.value) || 0 })}
+                          placeholder={selectedItem ? UNIT_LABELS[selectedItem.unitType as UnitType] ?? '' : ''}
+                          className="border border-slate-300 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:border-violet-500"
+                        />
+                        <input
+                          type="number" min="0" step="0.0001"
+                          value={line.unitCost || ''}
+                          onChange={(e) => updateLine(i, { unitCost: parseFloat(e.target.value) || 0 })}
+                          placeholder="$0.00"
+                          className="border border-slate-300 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:border-violet-500"
+                        />
+                        <span className="text-sm font-medium text-slate-700 text-right">
+                          {fmt(lineTotal)}
+                        </span>
+                        <button
+                          onClick={() => removeLine(i)}
+                          disabled={lines.length === 1}
+                          className="flex items-center justify-center text-slate-400 hover:text-red-500 disabled:opacity-30 transition-colors"
+                        >
+                          <Trash2 size={15} />
+                        </button>
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+
+              {/* Total */}
+              <div className="flex justify-end border-t border-slate-100 pt-3">
+                <div className="text-right">
+                  <p className="text-xs text-slate-400">Total del resurtido</p>
+                  <p className="text-xl font-bold text-slate-800">{fmt(totalAmount)}</p>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex gap-3 mt-5">
+              <button
+                onClick={resetCreate}
+                className="flex-1 border border-slate-300 text-slate-700 text-sm py-2 rounded-lg hover:bg-slate-50"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={() => createMut.mutate()}
+                disabled={!canCreate || createMut.isPending}
+                className="flex-1 bg-violet-600 hover:bg-violet-700 disabled:opacity-50 text-white text-sm font-semibold py-2 rounded-lg"
+              >
+                {createMut.isPending ? 'Guardando...' : 'Guardar borrador'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Detail Modal ─────────────────────────────────────────────────────── */}
+      {detailOrder && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50">
+          <div className="bg-white rounded-2xl p-6 w-full max-w-lg shadow-xl max-h-[85vh] flex flex-col">
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <h3 className="font-bold text-slate-800">{detailOrder.folio}</h3>
+                <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${STATUS_CONFIG[detailOrder.status].className}`}>
+                  {STATUS_CONFIG[detailOrder.status].label}
+                </span>
+              </div>
+              <button onClick={() => setDetailOrder(null)}><X size={20} className="text-slate-400" /></button>
+            </div>
+
+            <div className="bg-slate-50 rounded-lg p-3 text-sm text-slate-600 mb-4 space-y-0.5">
+              {detailOrder.supplier    && <p><span className="font-medium">Proveedor:</span> {detailOrder.supplier}</p>}
+              {detailOrder.notes       && <p><span className="font-medium">Notas:</span> {detailOrder.notes}</p>}
+              {detailOrder.createdByName && (
+                <p><span className="font-medium">Creado por:</span> {detailOrder.createdByName}</p>
+              )}
+              <p className="text-xs text-slate-400">{new Date(detailOrder.createdAt).toLocaleString('es-MX')}</p>
+            </div>
+
+            <div className="overflow-y-auto flex-1 space-y-2">
+              {/* Table header */}
+              <div className="grid grid-cols-[1fr_70px_80px_80px] gap-2 text-xs text-slate-400 px-1">
+                <span>Insumo</span><span className="text-right">Cantidad</span><span className="text-right">C. unit.</span><span className="text-right">Total</span>
+              </div>
+              {detailOrder.items.map((item) => (
+                <div key={item.id} className="grid grid-cols-[1fr_70px_80px_80px] gap-2 items-center py-2 border-b border-slate-100 text-sm">
+                  <div>
+                    <p className="font-medium text-slate-800">{item.inventoryItemName}</p>
+                    <p className="text-xs text-slate-400">{UNIT_LABELS[item.unitType] ?? item.unitType}</p>
+                  </div>
+                  <span className="text-right text-slate-700">{item.quantity}</span>
+                  <span className="text-right text-slate-700">{fmt(item.unitCost)}</span>
+                  <span className="text-right font-medium text-slate-800">{fmt(item.totalCost)}</span>
+                </div>
+              ))}
+            </div>
+
+            <div className="flex items-center justify-between border-t border-slate-200 pt-3 mt-3">
+              <span className="text-sm font-medium text-slate-600">Total</span>
+              <span className="text-xl font-bold text-slate-800">{fmt(detailOrder.totalAmount)}</span>
+            </div>
+
+            {detailOrder.status === 'DRAFT' && (
+              <div className="flex gap-3 mt-4">
+                <button
+                  onClick={() => cancelMut.mutate(detailOrder.id)}
+                  disabled={cancelMut.isPending}
+                  className="flex-1 flex items-center justify-center gap-1 border border-red-300 text-red-600 text-sm py-2 rounded-lg hover:bg-red-50 disabled:opacity-50"
+                >
+                  <XCircle size={15} /> Cancelar
+                </button>
+                <button
+                  onClick={() => confirmMut.mutate(detailOrder.id)}
+                  disabled={confirmMut.isPending}
+                  className="flex-1 flex items-center justify-center gap-1 bg-green-600 hover:bg-green-700 text-white text-sm font-semibold py-2 rounded-lg disabled:opacity-50"
+                >
+                  <CheckCircle size={15} /> {confirmMut.isPending ? 'Confirmando...' : 'Confirmar resurtido'}
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
