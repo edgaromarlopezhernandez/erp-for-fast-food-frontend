@@ -7,6 +7,8 @@ export const cancelSale = (id: number) =>
   client.post<Sale>(`/api/sales/${id}/cancel`).then((r) => r.data)
 export const getSales = (cartId?: number) =>
   client.get<Sale[]>('/api/sales', { params: cartId ? { cartId } : {} }).then((r) => r.data)
+export const getSalesByRange = (from: string, to: string, cartId?: number) =>
+  client.get<Sale[]>('/api/sales/range', { params: { from, to, ...(cartId ? { cartId } : {}) } }).then((r) => r.data)
 export const getSale = (id: number) =>
   client.get<Sale>(`/api/sales/${id}`).then((r) => r.data)
 export const getMySales = () =>

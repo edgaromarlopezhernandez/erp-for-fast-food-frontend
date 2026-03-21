@@ -17,6 +17,8 @@ import Sales from './pages/Sales'
 import PosView from './pages/PosView'
 import PurchaseOrders from './pages/PurchaseOrders'
 import Reports from './pages/Reports'
+import Expenses from './pages/Expenses'
+import Requisitions from './pages/Requisitions'
 import Payroll from './pages/Payroll'
 import Cancellations from './pages/Cancellations'
 import Shifts from './pages/Shifts'
@@ -86,6 +88,16 @@ function AppRoutes() {
       <Route path="/purchase-orders" element={
         <ProtectedRoute allowedRoles={['ADMIN', 'MANAGER']}>
           <Layout><PurchaseOrders /></Layout>
+        </ProtectedRoute>
+      } />
+      <Route path="/expenses" element={
+        <ProtectedRoute allowedRoles={['ADMIN']}>
+          <Layout><Expenses /></Layout>
+        </ProtectedRoute>
+      } />
+      <Route path="/requisitions" element={
+        <ProtectedRoute allowedRoles={['ADMIN', 'MANAGER']}>
+          <Layout><Requisitions /></Layout>
         </ProtectedRoute>
       } />
       <Route path="/reports" element={

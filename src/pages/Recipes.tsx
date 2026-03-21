@@ -7,7 +7,7 @@ import {
   addRecipeExtra, updateRecipeExtra, deleteRecipeExtra,
 } from '../api/recipes'
 import type { Product, InventoryItem, RecipeItemRequest, RecipeExtra } from '../types'
-import { BookOpen, Plus, Trash2, X, ChevronDown, Sparkles, Pencil } from 'lucide-react'
+import { BookOpen, Plus, Trash2, X, ChevronDown, Sparkles, Pencil, AlertTriangle, Lock, Unlock } from 'lucide-react'
 
 interface ExtraForm { name: string; extraPrice: string; inventoryItemId: number; quantityRequired: string }
 const EMPTY_EXTRA: ExtraForm = { name: '', extraPrice: '', inventoryItemId: 0, quantityRequired: '' }
@@ -37,7 +37,7 @@ export default function Recipes() {
     try {
       const recipe = await getRecipeByProduct(product.id)
       setRecipeId(recipe.id)
-      setItems(recipe.items.map((i) => ({ inventoryItemId: i.inventoryItemId, quantityRequired: i.quantityRequired })))
+      setItems(recipe.items.map((i) => ({ inventoryItemId: i.inventoryItemId, quantityRequired: i.quantityRequired, canExclude: i.canExclude })))
       setExtras(recipe.extras ?? [])
     } catch {
       setRecipeId(null)
@@ -48,10 +48,12 @@ export default function Recipes() {
     }
   }
 
-  const addItem = () => setItems([...items, { inventoryItemId: 0, quantityRequired: 0 }])
+  const addItem = () => setItems([...items, { inventoryItemId: 0, quantityRequired: 0, canExclude: true }])
   const removeItem = (i: number) => setItems(items.filter((_, idx) => idx !== i))
   const updateItem = (i: number, key: keyof RecipeItemRequest, val: number) =>
     setItems(items.map((item, idx) => idx === i ? { ...item, [key]: val } : item))
+  const toggleCanExclude = (i: number) =>
+    setItems(items.map((item, idx) => idx === i ? { ...item, canExclude: !item.canExclude } : item))
 
   const saveMut = useMutation({
     mutationFn: () => saveRecipe({ productId: selected!.id, items }),
@@ -144,6 +146,17 @@ export default function Recipes() {
       <h2 className="text-xl font-bold text-slate-800">Recetas</h2>
       <p className="text-slate-500 text-sm">Configura insumos base y extras opcionales de cada producto.</p>
 
+      {inventory.length === 0 && (
+        <div className="flex items-start gap-3 bg-amber-50 border border-amber-200 text-amber-800 rounded-xl px-4 py-3.5">
+          <AlertTriangle size={18} className="text-amber-500 mt-0.5 shrink-0" />
+          <div className="text-sm">
+            <span className="font-semibold">Sin insumos en inventario.</span>{' '}
+            Para configurar recetas primero debes agregar los insumos que utilizas en tu negocio desde la sección{' '}
+            <a href="/inventory" className="underline font-medium hover:text-amber-900">Inventario</a>.
+          </div>
+        </div>
+      )}
+
       <div className="grid md:grid-cols-2 gap-4">
         {/* Product selector */}
         <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
@@ -200,6 +213,13 @@ export default function Recipes() {
                   <Plus size={12} /> Insumo
                 </button>
               </div>
+              {items.length > 0 && (
+                <div className="px-4 pb-1 flex items-center gap-1 text-xs text-slate-400">
+                  <Unlock size={11} className="text-green-500" /> <span>puede quitarse</span>
+                  <span className="mx-1">·</span>
+                  <Lock size={11} className="text-slate-400" /> <span>siempre incluido</span>
+                </div>
+              )}
               <div className="px-4 pb-3 space-y-2">
                 {items.map((item, i) => (
                   <div key={i} className="flex items-center gap-2">
@@ -213,13 +233,24 @@ export default function Recipes() {
                         <option key={inv.id} value={inv.id}>{inv.name}</option>
                       ))}
                     </select>
-                    <div className="flex items-center gap-1 w-28">
+                    <div className="flex items-center gap-1 w-24">
                       <input type="number" step="0.001" value={item.quantityRequired}
                         onChange={(e) => updateItem(i, 'quantityRequired', parseFloat(e.target.value))}
                         className="w-full border border-slate-300 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:border-violet-500"
                         placeholder="0" />
                       <span className="text-xs text-slate-400 w-6 shrink-0">{unitLabel(item.inventoryItemId)}</span>
                     </div>
+                    <button
+                      onClick={() => toggleCanExclude(i)}
+                      title={item.canExclude ? 'El cliente puede pedirlo sin este ingrediente — clic para fijarlo' : 'Siempre incluido — clic para permitir quitarlo'}
+                      className={`shrink-0 p-1.5 rounded-lg transition-colors ${
+                        item.canExclude
+                          ? 'bg-green-50 text-green-600 hover:bg-green-100'
+                          : 'bg-slate-100 text-slate-400 hover:bg-slate-200'
+                      }`}
+                    >
+                      {item.canExclude ? <Unlock size={13} /> : <Lock size={13} />}
+                    </button>
                     <button onClick={() => removeItem(i)} className="text-slate-400 hover:text-red-500"><X size={15} /></button>
                   </div>
                 ))}
@@ -263,9 +294,31 @@ export default function Recipes() {
                 {showExtraForm && recipeId && (
                   <div className="border border-amber-200 rounded-xl p-3 bg-amber-50/50 space-y-2">
                     <p className="text-xs font-semibold text-amber-700">{editingExtra ? 'Editar extra' : 'Nuevo extra'}</p>
-                    <input type="text" placeholder="Nombre del extra (ej: Cacahuates)"
-                      value={extraForm.name} onChange={(e) => setExtraForm(f => ({ ...f, name: e.target.value }))}
-                      className="w-full border border-slate-300 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:border-amber-400" />
+                    <div>
+                      <label className="text-xs text-slate-500 block mb-0.5">Insumo</label>
+                      <select value={extraForm.inventoryItemId || ''}
+                        onChange={(e) => {
+                          const id = parseInt(e.target.value)
+                          const inv = (inventory as InventoryItem[]).find(i => i.id === id)
+                          setExtraForm(f => ({
+                            ...f,
+                            inventoryItemId: id,
+                            name: f.name.trim() === '' ? (inv?.name ?? '') : f.name,
+                          }))
+                        }}
+                        className="w-full border border-slate-300 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:border-amber-400">
+                        <option value="">Seleccionar insumo</option>
+                        {(inventory as InventoryItem[]).map((inv) => (
+                          <option key={inv.id} value={inv.id}>{inv.name}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="text-xs text-slate-500 block mb-0.5">Nombre que verá el cliente</label>
+                      <input type="text" placeholder="ej: Con cacahuates, Con mayonesa…"
+                        value={extraForm.name} onChange={(e) => setExtraForm(f => ({ ...f, name: e.target.value }))}
+                        className="w-full border border-slate-300 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:border-amber-400" />
+                    </div>
                     <div className="flex gap-2">
                       <div className="flex-1">
                         <label className="text-xs text-slate-500 block mb-0.5">Precio adicional $</label>
@@ -274,22 +327,11 @@ export default function Recipes() {
                           className="w-full border border-slate-300 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:border-amber-400" />
                       </div>
                       <div className="flex-1">
-                        <label className="text-xs text-slate-500 block mb-0.5">Cantidad a descontar</label>
+                        <label className="text-xs text-slate-500 block mb-0.5">Cantidad a descontar ({unitLabel(extraForm.inventoryItemId)})</label>
                         <input type="number" min={0} step="0.001" placeholder="0"
                           value={extraForm.quantityRequired} onChange={(e) => setExtraForm(f => ({ ...f, quantityRequired: e.target.value }))}
                           className="w-full border border-slate-300 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:border-amber-400" />
                       </div>
-                    </div>
-                    <div>
-                      <label className="text-xs text-slate-500 block mb-0.5">Insumo a descontar</label>
-                      <select value={extraForm.inventoryItemId || ''}
-                        onChange={(e) => setExtraForm(f => ({ ...f, inventoryItemId: parseInt(e.target.value) }))}
-                        className="w-full border border-slate-300 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:border-amber-400">
-                        <option value="">Seleccionar insumo</option>
-                        {(inventory as InventoryItem[]).map((inv) => (
-                          <option key={inv.id} value={inv.id}>{inv.name}</option>
-                        ))}
-                      </select>
                     </div>
                     {extraError && <p className="text-xs text-red-500">{extraError}</p>}
                     <div className="flex gap-2 pt-1">

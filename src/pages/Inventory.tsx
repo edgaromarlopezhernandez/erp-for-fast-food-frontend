@@ -1,34 +1,65 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
-  getInventory, createInventoryItem, updateInventoryItem, adjustStock, getMovements, deleteInventoryItem
+  getInventory, createInventoryItem, updateInventoryItem,
+  adjustStock, getMovements, deleteInventoryItem, transferToCart,
+  getCartStockAnalysis, reconcileStock,
+  type TransferLine,
 } from '../api/inventory'
+import { getCarts } from '../api/carts'
 import type { InventoryItem, InventoryItemRequest, MovementType, UnitType } from '../types'
-import { Plus, Pencil, TrendingUp, AlertTriangle, X, History, Trash2 } from 'lucide-react'
+import { Plus, Pencil, TrendingUp, AlertTriangle, X, History, Trash2, Warehouse, ArrowRightLeft, BarChart2, ClipboardList } from 'lucide-react'
 
 const UNIT_LABELS: Record<UnitType, string> = {
   PIECE: 'pza', GRAM: 'g', MILLILITER: 'ml',
 }
 const MOVE_LABELS: Record<MovementType, string> = {
-  PURCHASE: 'Compra', TRANSFER_TO_CART: 'Transferencia',
+  PURCHASE: 'Compra', TRANSFER_TO_CART: 'Recepción en carrito',
+  TRANSIT_DISPATCHED: 'Despacho a tránsito',
   SALE_DEDUCTION: 'Venta', MANUAL_ADJUSTMENT: 'Ajuste',
   WASTE: 'Merma', RETURN: 'Devolución', OPENING_STOCK: 'Stock inicial',
 }
 
 export default function Inventory() {
   const qc = useQueryClient()
-  const { data: items = [], isLoading } = useQuery({ queryKey: ['inventory'], queryFn: getInventory })
 
-  const [itemModal, setItemModal] = useState<{ open: boolean; item?: InventoryItem }>({ open: false })
-  const [adjustModal, setAdjustModal] = useState<{ open: boolean; item?: InventoryItem }>({ open: false })
+  // Location filter: undefined = bodega general | N = carrito N
+  const [locationCartId, setLocationCartId] = useState<number | undefined>(undefined)
+  const isCartView = locationCartId !== undefined
+
+  const { data: carts = [] } = useQuery({ queryKey: ['carts'], queryFn: getCarts })
+  const activeCarts = carts.filter((c) => c.active)
+
+  const { data: items = [], isLoading } = useQuery({
+    queryKey: ['inventory', locationCartId],
+    queryFn: () => getInventory(locationCartId),
+  })
+
+  const [itemModal, setItemModal]       = useState<{ open: boolean; item?: InventoryItem }>({ open: false })
+  const [adjustModal, setAdjustModal]   = useState<{ open: boolean; item?: InventoryItem }>({ open: false })
   const [historyModal, setHistoryModal] = useState<{ open: boolean; item?: InventoryItem }>({ open: false })
   const [deleteTarget, setDeleteTarget] = useState<InventoryItem | null>(null)
-  const [deleteError, setDeleteError] = useState('')
+  const [deleteError, setDeleteError]   = useState('')
+
+  // Transfer modal state
+  const [transferModal, setTransferModal] = useState(false)
+  const [transferCartId, setTransferCartId] = useState<number | undefined>(undefined)
+  const [transferLines, setTransferLines] = useState<Record<number, string>>({})  // itemId → qty string
+  const [transferNotes, setTransferNotes] = useState('')
+  const [transferError, setTransferError] = useState('')
+
+  // Reconcile (toma de inventario)
+  const [reconcileModal, setReconcileModal] = useState(false)
+  const [reconcileRows, setReconcileRows] = useState<Record<number, string>>({})
+  const [reconcileNotes, setReconcileNotes] = useState('')
+  const [reconcileError, setReconcileError] = useState('')
 
   const [form, setForm] = useState<InventoryItemRequest>({
     name: '', unitType: 'PIECE', minimumStock: 0, averageCost: 0,
   })
+  const [costCalc, setCostCalc] = useState({ totalPrice: '', totalQty: '', initialStock: '' })
   const [adjust, setAdjust] = useState({ movementType: 'PURCHASE' as MovementType, quantity: 0, notes: '' })
+  const [adjustCost, setAdjustCost] = useState({ totalPrice: '', totalQty: '' })
 
   const { data: movements = [] } = useQuery({
     queryKey: ['movements', historyModal.item?.id],
@@ -37,14 +68,26 @@ export default function Inventory() {
   })
 
   const saveMut = useMutation({
-    mutationFn: () => itemModal.item
-      ? updateInventoryItem(itemModal.item.id, form)
-      : createInventoryItem(form),
+    mutationFn: async () => {
+      const item = itemModal.item
+        ? await updateInventoryItem(itemModal.item.id, form)
+        : await createInventoryItem(form)
+      const initQty = parseFloat(costCalc.initialStock)
+      if (!itemModal.item && initQty > 0) {
+        await adjustStock({ inventoryItemId: item.id, movementType: 'OPENING_STOCK', quantity: initQty })
+      }
+      return item
+    },
     onSuccess: () => { qc.invalidateQueries({ queryKey: ['inventory'] }); setItemModal({ open: false }) },
   })
 
   const adjustMut = useMutation({
-    mutationFn: () => adjustStock({ inventoryItemId: adjustModal.item!.id, ...adjust }),
+    mutationFn: () => {
+      const p = parseFloat(adjustCost.totalPrice)
+      const q = parseFloat(adjustCost.totalQty)
+      const unitCost = p > 0 && q > 0 ? p / q : undefined
+      return adjustStock({ inventoryItemId: adjustModal.item!.id, ...adjust, unitCost })
+    },
     onSuccess: () => { qc.invalidateQueries({ queryKey: ['inventory'] }); setAdjustModal({ open: false }) },
   })
 
@@ -57,24 +100,154 @@ export default function Inventory() {
     },
   })
 
+  const reconcileMut = useMutation({
+    mutationFn: () => {
+      const reconcileItems = items
+        .filter((item) => reconcileRows[item.id] !== undefined && reconcileRows[item.id] !== '')
+        .map((item) => ({
+          inventoryItemId: item.id,
+          physicalCount: parseFloat(reconcileRows[item.id]),
+          cartId: locationCartId,
+        }))
+      return reconcileStock({ items: reconcileItems, notes: reconcileNotes || undefined })
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['inventory'] })
+      setReconcileModal(false)
+      setReconcileRows({})
+      setReconcileNotes('')
+      setReconcileError('')
+    },
+    onError: (err: unknown) => {
+      const msg = (err as { response?: { data?: { message?: string } } })?.response?.data?.message
+      setReconcileError(msg || 'Error al guardar la toma de inventario.')
+    },
+  })
+
+  const transferMut = useMutation({
+    mutationFn: () => {
+      const lines: TransferLine[] = Object.entries(transferLines)
+        .filter(([, qty]) => parseFloat(qty) > 0)
+        .map(([id, qty]) => ({ inventoryItemId: Number(id), quantity: parseFloat(qty) }))
+      return transferToCart({ cartId: transferCartId!, items: lines, notes: transferNotes || undefined })
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['inventory'] })
+      setTransferModal(false)
+      setTransferLines({})
+      setTransferNotes('')
+      setTransferError('')
+    },
+    onError: (err: any) => {
+      setTransferError(err?.response?.data?.message ?? 'Error al transferir.')
+    },
+  })
+
   const openEdit = (item: InventoryItem) => {
     setForm({ name: item.name, unitType: item.unitType, minimumStock: item.minimumStock, averageCost: item.averageCost })
+    setCostCalc({ totalPrice: '', totalQty: '', initialStock: '' })
     setItemModal({ open: true, item })
   }
+
+  const handleCostCalc = (field: 'totalPrice' | 'totalQty', value: string) => {
+    const next = { ...costCalc, [field]: value }
+    setCostCalc(next)
+    const price = parseFloat(next.totalPrice)
+    const qty = parseFloat(next.totalQty)
+    if (price > 0 && qty > 0) {
+      setForm(f => ({ ...f, averageCost: price / qty }))
+    }
+  }
+
+  const calcUnitCost = (() => {
+    const p = parseFloat(costCalc.totalPrice)
+    const q = parseFloat(costCalc.totalQty)
+    return p > 0 && q > 0 ? p / q : null
+  })()
+
+  const openTransfer = () => {
+    setTransferCartId(activeCarts[0]?.id)
+    setTransferLines({})
+    setTransferNotes('')
+    setTransferError('')
+    setTransferModal(true)
+  }
+
+  // Items with central stock > 0, for transferring
+  const { data: centralItems = [] } = useQuery({
+    queryKey: ['inventory', undefined],
+    queryFn: () => getInventory(undefined),
+  })
+
+  // Cart stock analysis
+  const [analysisWindow, setAnalysisWindow] = useState(30)
+  const { data: analysis, isLoading: analysisLoading } = useQuery({
+    queryKey: ['cart-analysis', locationCartId, analysisWindow],
+    queryFn: () => getCartStockAnalysis(locationCartId!, analysisWindow),
+    enabled: isCartView,
+  })
+
+  const selectedCartName = activeCarts.find((c) => c.id === locationCartId)?.name
 
   if (isLoading) return <div className="text-slate-400 text-sm">Cargando...</div>
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h2 className="text-xl font-bold text-slate-800">Inventario</h2>
-        <button
-          onClick={() => { setForm({ name: '', unitType: 'PIECE', minimumStock: 0, averageCost: 0 }); setItemModal({ open: true }) }}
-          className="flex items-center gap-2 bg-violet-600 hover:bg-violet-700 text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors">
-          <Plus size={16} /> Nuevo insumo
-        </button>
+      {/* Header */}
+      <div className="flex items-center justify-between flex-wrap gap-3">
+        <div>
+          <h2 className="text-xl font-bold text-slate-800">Inventario</h2>
+          {isCartView && selectedCartName && (
+            <p className="text-xs text-slate-400 mt-0.5">Stock en {selectedCartName}</p>
+          )}
+        </div>
+        <div className="flex gap-2">
+          <button
+            onClick={() => { setReconcileRows({}); setReconcileNotes(''); setReconcileError(''); setReconcileModal(true) }}
+            className="flex items-center gap-1.5 border border-slate-300 text-slate-600 hover:bg-slate-50 text-sm font-medium px-3 py-2 rounded-lg transition-colors">
+            <ClipboardList size={15} /> Toma de inventario
+          </button>
+          {!isCartView && (
+            <>
+              <button
+                onClick={openTransfer}
+                className="flex items-center gap-1.5 border border-violet-300 text-violet-700 hover:bg-violet-50 text-sm font-medium px-3 py-2 rounded-lg transition-colors">
+                <ArrowRightLeft size={15} /> Transferir a carrito
+              </button>
+              <button
+                onClick={() => { setForm({ name: '', unitType: 'PIECE', minimumStock: 0, averageCost: 0 }); setCostCalc({ totalPrice: '', totalQty: '', initialStock: '' }); setItemModal({ open: true }) }}
+                className="flex items-center gap-2 bg-violet-600 hover:bg-violet-700 text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors">
+                <Plus size={16} /> Nuevo insumo
+              </button>
+            </>
+          )}
+        </div>
       </div>
 
+      {/* Location filter */}
+      <div className="flex items-center gap-2">
+        <Warehouse size={15} className="text-slate-400 shrink-0" />
+        <select
+          value={locationCartId ?? ''}
+          onChange={(e) => setLocationCartId(e.target.value === '' ? undefined : Number(e.target.value))}
+          className="border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-700 bg-white focus:outline-none focus:border-violet-500 cursor-pointer"
+        >
+          <option value="">Bodega general</option>
+          {activeCarts.map((c) => (
+            <option key={c.id} value={c.id}>{c.name}</option>
+          ))}
+        </select>
+      </div>
+
+      {/* Hint for cart view */}
+      {isCartView && (
+        <div className="bg-violet-50 border border-violet-200 rounded-xl px-4 py-2 text-xs text-violet-700">
+          Mostrando stock disponible en <strong>{selectedCartName}</strong>.
+          El número en gris es el stock de bodega general para referencia.
+        </div>
+      )}
+
+      {/* Items grid */}
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
         {items.map((item) => (
           <div key={item.id} className={`bg-white rounded-xl border p-4 ${item.belowMinimum ? 'border-red-300' : 'border-slate-200'}`}>
@@ -88,35 +261,223 @@ export default function Inventory() {
             <div className="text-2xl font-bold text-slate-800 mb-1">
               {item.currentStock} <span className="text-sm font-normal text-slate-400">{UNIT_LABELS[item.unitType]}</span>
             </div>
+            {isCartView && item.centralStock !== item.currentStock && (
+              <p className="text-xs text-slate-400 mb-1">Bodega: {item.centralStock} {UNIT_LABELS[item.unitType]}</p>
+            )}
             <p className="text-xs text-slate-400 mb-3">Mínimo: {item.minimumStock} {UNIT_LABELS[item.unitType]}</p>
             <div className="flex gap-2">
-              <button onClick={() => { setAdjust({ movementType: 'PURCHASE', quantity: 0, notes: '' }); setAdjustModal({ open: true, item }) }}
-                className="flex-1 flex items-center justify-center gap-1 text-xs bg-green-50 hover:bg-green-100 text-green-700 font-medium py-1.5 rounded-lg transition-colors">
-                <TrendingUp size={13} /> Ajustar
-              </button>
+              {!isCartView && (
+                <button onClick={() => { setAdjust({ movementType: 'PURCHASE', quantity: 0, notes: '' }); setAdjustCost({ totalPrice: '', totalQty: '' }); setAdjustModal({ open: true, item }) }}
+                  className="flex-1 flex items-center justify-center gap-1 text-xs bg-green-50 hover:bg-green-100 text-green-700 font-medium py-1.5 rounded-lg transition-colors">
+                  <TrendingUp size={13} /> Ajustar
+                </button>
+              )}
               <button onClick={() => setHistoryModal({ open: true, item })}
                 className="flex items-center justify-center gap-1 text-xs bg-slate-50 hover:bg-slate-100 text-slate-600 font-medium py-1.5 px-3 rounded-lg transition-colors">
                 <History size={13} />
               </button>
-              <button onClick={() => openEdit(item)}
-                className="flex items-center justify-center gap-1 text-xs bg-violet-50 hover:bg-violet-100 text-violet-600 font-medium py-1.5 px-3 rounded-lg transition-colors">
-                <Pencil size={13} />
-              </button>
-              <button onClick={() => { setDeleteError(''); setDeleteTarget(item) }}
-                className="flex items-center justify-center gap-1 text-xs bg-red-50 hover:bg-red-100 text-red-500 font-medium py-1.5 px-3 rounded-lg transition-colors">
-                <Trash2 size={13} />
-              </button>
+              {!isCartView && (
+                <>
+                  <button onClick={() => openEdit(item)}
+                    className="flex items-center justify-center gap-1 text-xs bg-violet-50 hover:bg-violet-100 text-violet-600 font-medium py-1.5 px-3 rounded-lg transition-colors">
+                    <Pencil size={13} />
+                  </button>
+                  <button onClick={() => { setDeleteError(''); setDeleteTarget(item) }}
+                    className="flex items-center justify-center gap-1 text-xs bg-red-50 hover:bg-red-100 text-red-500 font-medium py-1.5 px-3 rounded-lg transition-colors">
+                    <Trash2 size={13} />
+                  </button>
+                </>
+              )}
             </div>
           </div>
         ))}
         {items.length === 0 && (
           <p className="text-slate-400 text-sm col-span-full py-8 text-center">
-            No hay insumos registrados.
+            {isCartView ? 'Sin stock transferido a este carrito.' : 'No hay insumos registrados.'}
           </p>
         )}
       </div>
 
-      {/* Item Modal */}
+      {/* ── Cart stock analysis ──────────────────────────────────────────────── */}
+      {isCartView && (
+        <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+          <div className="flex items-center justify-between px-5 py-3 border-b border-slate-100">
+            <div className="flex items-center gap-2">
+              <BarChart2 size={16} className="text-violet-600" />
+              <h3 className="font-semibold text-slate-800 text-sm">Análisis de stock — {selectedCartName}</h3>
+            </div>
+            <div className="flex gap-1">
+              {[7, 14, 30].map((d) => (
+                <button
+                  key={d}
+                  onClick={() => setAnalysisWindow(d)}
+                  className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-colors ${
+                    analysisWindow === d
+                      ? 'bg-violet-600 text-white'
+                      : 'text-slate-500 hover:bg-slate-100'
+                  }`}
+                >
+                  {d}d
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {analysisLoading ? (
+            <p className="text-slate-400 text-sm text-center py-6">Calculando...</p>
+          ) : !analysis || analysis.items.length === 0 ? (
+            <p className="text-slate-400 text-sm text-center py-6">
+              Sin datos de consumo para este carrito en los últimos {analysisWindow} días.
+            </p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-xs text-slate-400 border-b border-slate-100">
+                    <th className="text-left px-5 py-2 font-medium">Insumo</th>
+                    <th className="text-right px-4 py-2 font-medium">Stock actual</th>
+                    <th className="text-right px-4 py-2 font-medium">Consumo/día</th>
+                    <th className="text-right px-4 py-2 font-medium">Días estimados</th>
+                    <th className="px-4 py-2"></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {analysis.items.map((item) => {
+                    const unitLabel = item.unitType === 'PIECE' ? 'pza'
+                      : item.unitType === 'GRAM' ? 'g' : 'ml'
+                    const statusCfg = {
+                      CRITICAL: { label: 'Crítico',   bg: 'bg-red-100',   text: 'text-red-700',   row: 'bg-red-50/40' },
+                      LOW:      { label: 'Bajo',       bg: 'bg-amber-100', text: 'text-amber-700', row: 'bg-amber-50/40' },
+                      OK:       { label: 'OK',         bg: 'bg-green-100', text: 'text-green-700', row: '' },
+                      NO_DATA:  { label: 'Sin datos',  bg: 'bg-slate-100', text: 'text-slate-500', row: '' },
+                    }[item.status] ?? { label: item.status, bg: 'bg-slate-100', text: 'text-slate-500', row: '' }
+
+                    return (
+                      <tr key={item.inventoryItemId} className={`border-b border-slate-100 last:border-0 ${statusCfg.row}`}>
+                        <td className="px-5 py-3 font-medium text-slate-800">{item.name}</td>
+                        <td className="px-4 py-3 text-right text-slate-700">
+                          {item.currentCartStock.toFixed(2)} <span className="text-slate-400">{unitLabel}</span>
+                        </td>
+                        <td className="px-4 py-3 text-right text-slate-500">
+                          {item.avgDailyConsumption > 0
+                            ? <>{item.avgDailyConsumption.toFixed(2)} <span className="text-slate-400">{unitLabel}</span></>
+                            : <span className="text-slate-300">—</span>
+                          }
+                        </td>
+                        <td className="px-4 py-3 text-right font-semibold">
+                          {item.estimatedDaysRemaining !== null
+                            ? <span className={item.status === 'CRITICAL' ? 'text-red-600' : item.status === 'LOW' ? 'text-amber-600' : 'text-slate-700'}>
+                                {item.estimatedDaysRemaining.toFixed(1)}d
+                              </span>
+                            : <span className="text-slate-300">—</span>
+                          }
+                        </td>
+                        <td className="px-4 py-3">
+                          <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-medium ${statusCfg.bg} ${statusCfg.text}`}>
+                            {statusCfg.label}
+                          </span>
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          <div className="px-5 py-2 bg-slate-50 border-t border-slate-100">
+            <p className="text-xs text-slate-400">
+              Basado en el promedio de consumo de los últimos <strong>{analysisWindow} días</strong>.
+              Crítico &lt; 1 día · Bajo &lt; 3 días.
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* ── Transfer modal ───────────────────────────────────────────────────── */}
+      {transferModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50">
+          <div className="bg-white rounded-2xl w-full max-w-lg shadow-xl flex flex-col max-h-[90vh]">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100">
+              <div className="flex items-center gap-2">
+                <ArrowRightLeft size={18} className="text-violet-600" />
+                <h3 className="font-bold text-slate-800">Transferir a punto de venta</h3>
+              </div>
+              <button onClick={() => setTransferModal(false)}><X size={20} className="text-slate-400" /></button>
+            </div>
+
+            <div className="px-6 py-4 space-y-4 overflow-y-auto flex-1">
+              {/* Destino */}
+              <div>
+                <label className="text-sm font-medium text-slate-700 block mb-1">Destino</label>
+                <select value={transferCartId ?? ''}
+                  onChange={(e) => setTransferCartId(Number(e.target.value))}
+                  className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-violet-500">
+                  {activeCarts.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                </select>
+              </div>
+
+              {/* Items */}
+              <div>
+                <label className="text-sm font-medium text-slate-700 block mb-2">Insumos a transferir</label>
+                <div className="space-y-2">
+                  {centralItems.filter((i) => i.currentStock > 0).map((item) => (
+                    <div key={item.id} className="flex items-center gap-3">
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm text-slate-700 truncate">{item.name}</p>
+                        <p className="text-xs text-slate-400">Disponible: {item.currentStock} {UNIT_LABELS[item.unitType]}</p>
+                      </div>
+                      <input
+                        type="number" step="0.001" min="0"
+                        max={item.currentStock}
+                        value={transferLines[item.id] ?? ''}
+                        onChange={(e) => setTransferLines((prev) => ({ ...prev, [item.id]: e.target.value }))}
+                        placeholder="0"
+                        className="w-24 border border-slate-300 rounded-lg px-2 py-1.5 text-sm text-right focus:outline-none focus:border-violet-500"
+                      />
+                      <span className="text-xs text-slate-400 w-8">{UNIT_LABELS[item.unitType]}</span>
+                    </div>
+                  ))}
+                  {centralItems.filter((i) => i.currentStock > 0).length === 0 && (
+                    <p className="text-sm text-slate-400">Sin stock disponible en bodega general.</p>
+                  )}
+                </div>
+              </div>
+
+              {/* Notas */}
+              <div>
+                <label className="text-sm font-medium text-slate-700 block mb-1">Notas (opcional)</label>
+                <input value={transferNotes}
+                  onChange={(e) => setTransferNotes(e.target.value)}
+                  placeholder="ej. Surtido para turno matutino"
+                  className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-violet-500"
+                />
+              </div>
+
+              {transferError && <p className="text-red-500 text-sm">{transferError}</p>}
+            </div>
+
+            <div className="flex gap-3 px-6 py-4 border-t border-slate-100">
+              <button onClick={() => setTransferModal(false)}
+                className="flex-1 border border-slate-300 text-slate-700 text-sm py-2 rounded-lg hover:bg-slate-50">
+                Cancelar
+              </button>
+              <button
+                onClick={() => transferMut.mutate()}
+                disabled={
+                  transferMut.isPending ||
+                  !transferCartId ||
+                  Object.values(transferLines).every((v) => !v || parseFloat(v) <= 0)
+                }
+                className="flex-1 bg-violet-600 hover:bg-violet-700 disabled:opacity-50 text-white text-sm font-semibold py-2 rounded-lg">
+                {transferMut.isPending ? 'Transfiriendo...' : 'Confirmar transferencia'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Item modal ───────────────────────────────────────────────────────── */}
       {itemModal.open && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50">
           <div className="bg-white rounded-2xl p-6 w-full max-w-md shadow-xl">
@@ -133,33 +494,89 @@ export default function Inventory() {
               </div>
               <div>
                 <label className="text-sm font-medium text-slate-700 block mb-1">Unidad de medida</label>
-                <select value={form.unitType} onChange={(e) => setForm({ ...form, unitType: e.target.value as UnitType })}
+                <select value={form.unitType}
+                  onChange={(e) => { setForm({ ...form, unitType: e.target.value as UnitType }); setCostCalc({ totalPrice: '', totalQty: '' }) }}
                   className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-violet-500">
-                  <option value="PIECE">Pieza</option>
-                  <option value="GRAM">Gramo</option>
-                  <option value="MILLILITER">Mililitro</option>
+                  <option value="PIECE">Pieza (pza)</option>
+                  <option value="GRAM">Gramo (g)</option>
+                  <option value="MILLILITER">Mililitro (ml)</option>
                 </select>
+                {form.unitType === 'PIECE' && (
+                  <p className="mt-1.5 flex items-start gap-1.5 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                    <AlertTriangle size={12} className="mt-0.5 shrink-0 text-amber-500" />
+                    Para ingredientes que compras por peso o volumen (salsas, quesos, aceites…) usa <strong className="mx-0.5">Gramos</strong> o <strong className="mx-0.5">Mililitros</strong> — el gramaje varía entre presentaciones y el costo será más preciso.
+                  </p>
+                )}
               </div>
+
+              {/* Calculadora de costo */}
+              <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 space-y-2.5">
+                <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Costo de compra</p>
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="text-xs text-slate-500 block mb-1">Precio total pagado $</label>
+                    <input type="number" min={0} step="0.01"
+                      value={costCalc.totalPrice}
+                      onChange={(e) => handleCostCalc('totalPrice', e.target.value)}
+                      placeholder="ej. 160.00"
+                      className="w-full border border-slate-300 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:border-violet-500" />
+                  </div>
+                  <div>
+                    <label className="text-xs text-slate-500 block mb-1">
+                      Cantidad comprada ({UNIT_LABELS[form.unitType]})
+                    </label>
+                    <input type="number" min={0} step="1"
+                      value={costCalc.totalQty}
+                      onChange={(e) => handleCostCalc('totalQty', e.target.value)}
+                      placeholder={form.unitType === 'GRAM' ? 'ej. 1200' : form.unitType === 'MILLILITER' ? 'ej. 1000' : 'ej. 1'}
+                      className="w-full border border-slate-300 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:border-violet-500" />
+                  </div>
+                </div>
+                {calcUnitCost !== null ? (
+                  <div className="flex items-center justify-between bg-violet-50 border border-violet-200 rounded-lg px-3 py-2">
+                    <span className="text-xs text-violet-700">Costo por {UNIT_LABELS[form.unitType]}</span>
+                    <span className="text-sm font-bold text-violet-700">${calcUnitCost.toFixed(4)}</span>
+                  </div>
+                ) : (
+                  <div>
+                    <p className="text-xs text-slate-400">
+                      {itemModal.item
+                        ? <>Costo actual: <strong>${form.averageCost.toFixed(4)}/{UNIT_LABELS[form.unitType]}</strong>. Rellena los campos para recalcular.</>
+                        : 'Ingresa el precio y la cantidad para calcular el costo por unidad automáticamente.'}
+                    </p>
+                  </div>
+                )}
+              </div>
+
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="text-sm font-medium text-slate-700 block mb-1">Stock mínimo</label>
-                  <input type="number" value={form.minimumStock}
+                  <label className="text-sm font-medium text-slate-700 block mb-1">
+                    Stock mínimo ({UNIT_LABELS[form.unitType]})
+                  </label>
+                  <input type="number" min={0} value={form.minimumStock}
                     onChange={(e) => setForm({ ...form, minimumStock: parseFloat(e.target.value) })}
+                    placeholder="0"
                     className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-violet-500" />
+                  <p className="text-xs text-slate-400 mt-1">Alerta cuando baje de este nivel.</p>
                 </div>
-                <div>
-                  <label className="text-sm font-medium text-slate-700 block mb-1">Costo unitario $</label>
-                  <input type="number" step="0.0001" value={form.averageCost}
-                    onChange={(e) => setForm({ ...form, averageCost: parseFloat(e.target.value) })}
-                    className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-violet-500" />
-                </div>
+                {!itemModal.item && (
+                  <div>
+                    <label className="text-sm font-medium text-slate-700 block mb-1">
+                      Stock actual ({UNIT_LABELS[form.unitType]})
+                    </label>
+                    <input type="number" min={0} step="0.001"
+                      value={costCalc.initialStock}
+                      onChange={(e) => setCostCalc(c => ({ ...c, initialStock: e.target.value }))}
+                      placeholder="0"
+                      className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-violet-500" />
+                    <p className="text-xs text-slate-400 mt-1">¿Cuánto tienes ahora?</p>
+                  </div>
+                )}
               </div>
             </div>
             <div className="flex gap-3 mt-6">
               <button onClick={() => setItemModal({ open: false })}
-                className="flex-1 border border-slate-300 text-slate-700 text-sm py-2 rounded-lg hover:bg-slate-50">
-                Cancelar
-              </button>
+                className="flex-1 border border-slate-300 text-slate-700 text-sm py-2 rounded-lg hover:bg-slate-50">Cancelar</button>
               <button onClick={() => saveMut.mutate()} disabled={!form.name || saveMut.isPending}
                 className="flex-1 bg-violet-600 hover:bg-violet-700 disabled:opacity-50 text-white text-sm font-semibold py-2 rounded-lg">
                 {saveMut.isPending ? 'Guardando...' : 'Guardar'}
@@ -169,19 +586,25 @@ export default function Inventory() {
         </div>
       )}
 
-      {/* Adjust Modal */}
-      {adjustModal.open && adjustModal.item && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50">
-          <div className="bg-white rounded-2xl p-6 w-full max-w-sm shadow-xl">
-            <div className="flex items-center justify-between mb-5">
-              <h3 className="font-bold text-slate-800">Ajustar stock — {adjustModal.item.name}</h3>
-              <button onClick={() => setAdjustModal({ open: false })}><X size={20} className="text-slate-400" /></button>
-            </div>
-            <div className="space-y-4">
+      {/* ── Adjust modal ─────────────────────────────────────────────────────── */}
+      {adjustModal.open && adjustModal.item && (() => {
+        const unit = UNIT_LABELS[adjustModal.item.unitType]
+        const isPurchase = adjust.movementType === 'PURCHASE' || adjust.movementType === 'OPENING_STOCK'
+        const adjP = parseFloat(adjustCost.totalPrice)
+        const adjQ = parseFloat(adjustCost.totalQty)
+        const adjUnitCost = adjP > 0 && adjQ > 0 ? adjP / adjQ : null
+        return (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50">
+            <div className="bg-white rounded-2xl p-6 w-full max-w-sm shadow-xl space-y-4">
+              <div className="flex items-center justify-between">
+                <h3 className="font-bold text-slate-800">Ajustar — {adjustModal.item.name}</h3>
+                <button onClick={() => setAdjustModal({ open: false })}><X size={20} className="text-slate-400" /></button>
+              </div>
+
               <div>
                 <label className="text-sm font-medium text-slate-700 block mb-1">Tipo de movimiento</label>
                 <select value={adjust.movementType}
-                  onChange={(e) => setAdjust({ ...adjust, movementType: e.target.value as MovementType })}
+                  onChange={(e) => { setAdjust({ ...adjust, movementType: e.target.value as MovementType }); setAdjustCost({ totalPrice: '', totalQty: '' }) }}
                   className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-violet-500">
                   <option value="PURCHASE">Compra / Entrada</option>
                   <option value="OPENING_STOCK">Stock inicial</option>
@@ -189,36 +612,78 @@ export default function Inventory() {
                   <option value="WASTE">Merma</option>
                 </select>
               </div>
+
               <div>
                 <label className="text-sm font-medium text-slate-700 block mb-1">
-                  Cantidad ({UNIT_LABELS[adjustModal.item.unitType]}) — positivo = entrada, negativo = salida
+                  Cantidad ({unit}){!isPurchase && ' — positivo = entrada, negativo = salida'}
                 </label>
                 <input type="number" step="0.001" value={adjust.quantity}
                   onChange={(e) => setAdjust({ ...adjust, quantity: parseFloat(e.target.value) })}
                   className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-violet-500" />
               </div>
+
+              {/* Calculadora CPP — solo en entradas de compra */}
+              {isPurchase && (
+                <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 space-y-2.5">
+                  <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Costo de esta compra</p>
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="text-xs text-slate-500 block mb-1">Precio total pagado $</label>
+                      <input type="number" min={0} step="0.01"
+                        value={adjustCost.totalPrice}
+                        onChange={(e) => setAdjustCost(c => ({ ...c, totalPrice: e.target.value }))}
+                        placeholder="ej. 160.00"
+                        className="w-full border border-slate-300 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:border-violet-500" />
+                    </div>
+                    <div>
+                      <label className="text-xs text-slate-500 block mb-1">Cantidad comprada ({unit})</label>
+                      <input type="number" min={0} step="1"
+                        value={adjustCost.totalQty}
+                        onChange={(e) => setAdjustCost(c => ({ ...c, totalQty: e.target.value }))}
+                        placeholder="ej. 1200"
+                        className="w-full border border-slate-300 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:border-violet-500" />
+                    </div>
+                  </div>
+                  {adjUnitCost !== null ? (
+                    <div className="space-y-1">
+                      <div className="flex items-center justify-between bg-violet-50 border border-violet-200 rounded-lg px-3 py-2">
+                        <span className="text-xs text-violet-700">Costo por {unit} (esta compra)</span>
+                        <span className="text-sm font-bold text-violet-700">${adjUnitCost.toFixed(4)}</span>
+                      </div>
+                      <p className="text-xs text-slate-400 px-1">
+                        El costo promedio de <strong>{adjustModal.item.name}</strong> se recalculará automáticamente al confirmar.
+                      </p>
+                    </div>
+                  ) : (
+                    <p className="text-xs text-slate-400">
+                      Costo actual: <strong>${adjustModal.item.averageCost.toFixed(4)}/{unit}</strong>.
+                      Llena los campos para actualizar el costo promedio con CPP.
+                    </p>
+                  )}
+                </div>
+              )}
+
               <div>
                 <label className="text-sm font-medium text-slate-700 block mb-1">Notas</label>
                 <input value={adjust.notes} onChange={(e) => setAdjust({ ...adjust, notes: e.target.value })}
                   className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-violet-500"
                   placeholder="Opcional" />
               </div>
-            </div>
-            <div className="flex gap-3 mt-6">
-              <button onClick={() => setAdjustModal({ open: false })}
-                className="flex-1 border border-slate-300 text-slate-700 text-sm py-2 rounded-lg hover:bg-slate-50">
-                Cancelar
-              </button>
-              <button onClick={() => adjustMut.mutate()} disabled={adjustMut.isPending}
-                className="flex-1 bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white text-sm font-semibold py-2 rounded-lg">
-                {adjustMut.isPending ? 'Guardando...' : 'Confirmar'}
-              </button>
+
+              <div className="flex gap-3 pt-2">
+                <button onClick={() => setAdjustModal({ open: false })}
+                  className="flex-1 border border-slate-300 text-slate-700 text-sm py-2 rounded-lg hover:bg-slate-50">Cancelar</button>
+                <button onClick={() => adjustMut.mutate()} disabled={adjustMut.isPending}
+                  className="flex-1 bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white text-sm font-semibold py-2 rounded-lg">
+                  {adjustMut.isPending ? 'Guardando...' : 'Confirmar'}
+                </button>
+              </div>
             </div>
           </div>
-        </div>
-      )}
+        )
+      })()}
 
-      {/* ── Confirmar eliminación ─────────────────────────────────────────────── */}
+      {/* ── Delete confirmation ──────────────────────────────────────────────── */}
       {deleteTarget && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50">
           <div className="bg-white rounded-2xl p-6 w-full max-w-sm shadow-xl">
@@ -242,9 +707,7 @@ export default function Inventory() {
             )}
             <div className="flex gap-3">
               <button onClick={() => { setDeleteTarget(null); setDeleteError('') }}
-                className="flex-1 border border-slate-300 text-slate-700 text-sm py-2 rounded-lg hover:bg-slate-50">
-                Cancelar
-              </button>
+                className="flex-1 border border-slate-300 text-slate-700 text-sm py-2 rounded-lg hover:bg-slate-50">Cancelar</button>
               <button onClick={() => deleteMut.mutate(deleteTarget.id)} disabled={deleteMut.isPending}
                 className="flex-1 bg-red-500 hover:bg-red-600 disabled:opacity-50 text-white text-sm font-semibold py-2 rounded-lg">
                 {deleteMut.isPending ? 'Eliminando...' : 'Sí, eliminar'}
@@ -254,7 +717,114 @@ export default function Inventory() {
         </div>
       )}
 
-      {/* History Modal */}
+      {/* ── Reconcile (toma de inventario) modal ─────────────────────────────── */}
+      {reconcileModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50">
+          <div className="bg-white rounded-2xl w-full max-w-lg shadow-xl flex flex-col max-h-[90vh]">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100">
+              <div className="flex items-center gap-2">
+                <ClipboardList size={18} className="text-slate-600" />
+                <div>
+                  <h3 className="font-bold text-slate-800">Toma de inventario</h3>
+                  <p className="text-xs text-slate-400">
+                    {isCartView ? `Stock en ${selectedCartName}` : 'Bodega general'}
+                  </p>
+                </div>
+              </div>
+              <button onClick={() => setReconcileModal(false)}><X size={20} className="text-slate-400" /></button>
+            </div>
+
+            <div className="px-6 py-4 bg-amber-50 border-b border-amber-100">
+              <p className="text-xs text-amber-800">
+                Ingresa el conteo físico real de cada insumo. Los campos vacíos no se modifican.
+                Se registrará un ajuste manual por cada diferencia encontrada.
+              </p>
+            </div>
+
+            <div className="overflow-y-auto flex-1">
+              {items.length === 0 ? (
+                <p className="text-slate-400 text-sm text-center py-8">Sin insumos para mostrar.</p>
+              ) : (
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="text-xs text-slate-400 border-b border-slate-100 sticky top-0 bg-white">
+                      <th className="text-left px-5 py-2 font-medium">Insumo</th>
+                      <th className="text-right px-4 py-2 font-medium">Sistema</th>
+                      <th className="text-right px-4 py-2 font-medium w-32">Conteo real</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {items.map((item) => {
+                      const physVal = reconcileRows[item.id]
+                      const physical = physVal !== undefined && physVal !== '' ? parseFloat(physVal) : null
+                      const diff = physical !== null ? physical - item.currentStock : null
+                      return (
+                        <tr key={item.id} className="border-b border-slate-100 last:border-0">
+                          <td className="px-5 py-3">
+                            <p className="font-medium text-slate-800">{item.name}</p>
+                            <p className="text-xs text-slate-400">{UNIT_LABELS[item.unitType]}</p>
+                          </td>
+                          <td className="px-4 py-3 text-right text-slate-600">
+                            {item.currentStock} <span className="text-slate-400 text-xs">{UNIT_LABELS[item.unitType]}</span>
+                          </td>
+                          <td className="px-4 py-3">
+                            <div className="flex flex-col items-end gap-1">
+                              <input
+                                type="number" min={0} step="0.001"
+                                value={physVal ?? ''}
+                                onChange={(e) => setReconcileRows((r) => ({ ...r, [item.id]: e.target.value }))}
+                                placeholder={String(item.currentStock)}
+                                className="w-28 border border-slate-300 rounded-lg px-2 py-1.5 text-sm text-right focus:outline-none focus:border-violet-500"
+                              />
+                              {diff !== null && diff !== 0 && (
+                                <span className={`text-xs font-medium ${diff > 0 ? 'text-green-600' : 'text-red-500'}`}>
+                                  {diff > 0 ? '+' : ''}{diff.toFixed(2)}
+                                </span>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              )}
+            </div>
+
+            <div className="px-6 py-4 border-t border-slate-100 space-y-3">
+              <div>
+                <label className="text-sm font-medium text-slate-700 block mb-1">Notas (opcional)</label>
+                <input
+                  value={reconcileNotes}
+                  onChange={(e) => setReconcileNotes(e.target.value)}
+                  placeholder="ej. Conteo mensual de cierre"
+                  className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-violet-500"
+                />
+              </div>
+              {reconcileError && (
+                <p className="text-red-500 text-sm">{reconcileError}</p>
+              )}
+              <div className="flex gap-3">
+                <button onClick={() => setReconcileModal(false)}
+                  className="flex-1 border border-slate-300 text-slate-700 text-sm py-2 rounded-lg hover:bg-slate-50">
+                  Cancelar
+                </button>
+                <button
+                  onClick={() => reconcileMut.mutate()}
+                  disabled={
+                    reconcileMut.isPending ||
+                    Object.values(reconcileRows).every((v) => v === undefined || v === '')
+                  }
+                  className="flex-1 bg-slate-700 hover:bg-slate-800 disabled:opacity-50 text-white text-sm font-semibold py-2 rounded-lg">
+                  {reconcileMut.isPending ? 'Guardando...' : 'Guardar toma de inventario'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── History modal ────────────────────────────────────────────────────── */}
       {historyModal.open && historyModal.item && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50">
           <div className="bg-white rounded-2xl p-6 w-full max-w-md shadow-xl max-h-[80vh] flex flex-col">

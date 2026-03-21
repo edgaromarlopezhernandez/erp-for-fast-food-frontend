@@ -49,6 +49,8 @@ export default function PurchaseOrders() {
   const [supplier, setSupplier] = useState('')
   const [notes, setNotes]       = useState('')
   const [lines, setLines]       = useState<PurchaseOrderItemRequest[]>([emptyLine()])
+  // totalPrice[i] = precio total pagado por esa línea (UI only — unitCost se deriva de esto)
+  const [linePrices, setLinePrices] = useState<string[]>([''])
 
   // ── Mutations ─────────────────────────────────────────────────────────────────
   const createMut = useMutation({
@@ -78,19 +80,34 @@ export default function PurchaseOrders() {
 
   // ── Helpers ───────────────────────────────────────────────────────────────────
   const resetCreate = () => {
-    setSupplier(''); setNotes(''); setLines([emptyLine()]); setCreateOpen(false)
+    setSupplier(''); setNotes(''); setLines([emptyLine()]); setLinePrices(['']); setCreateOpen(false)
   }
 
   const updateLine = (i: number, patch: Partial<PurchaseOrderItemRequest>) =>
     setLines((prev) => prev.map((l, idx) => idx === i ? { ...l, ...patch } : l))
 
-  const removeLine = (i: number) =>
-    setLines((prev) => prev.filter((_, idx) => idx !== i))
+  const updateLinePrice = (i: number, totalPrice: string) => {
+    setLinePrices((prev) => prev.map((p, idx) => idx === i ? totalPrice : p))
+    const price = parseFloat(totalPrice)
+    const qty   = lines[i]?.quantity
+    if (price > 0 && qty > 0) {
+      updateLine(i, { unitCost: price / qty })
+    }
+  }
 
-  const totalAmount = lines.reduce((sum, l) => sum + (l.quantity * l.unitCost || 0), 0)
+  const removeLine = (i: number) => {
+    setLines((prev) => prev.filter((_, idx) => idx !== i))
+    setLinePrices((prev) => prev.filter((_, idx) => idx !== i))
+  }
+
+  // Total = suma de precios totales ingresados (no quantity * unitCost para evitar confusión)
+  const totalAmount = linePrices.reduce((sum, p, i) => {
+    const price = parseFloat(p)
+    return sum + (price > 0 && lines[i]?.inventoryItemId > 0 ? price : 0)
+  }, 0)
 
   const canCreate = lines.length > 0 && lines.every(
-    (l) => l.inventoryItemId > 0 && l.quantity > 0 && l.unitCost > 0,
+    (l, i) => l.inventoryItemId > 0 && l.quantity > 0 && parseFloat(linePrices[i] ?? '') > 0,
   )
 
   if (isLoading) return <div className="text-slate-400 text-sm">Cargando...</div>
@@ -214,7 +231,7 @@ export default function PurchaseOrders() {
                 <div className="flex items-center justify-between mb-2">
                   <label className="text-sm font-medium text-slate-700">Insumos</label>
                   <button
-                    onClick={() => setLines((prev) => [...prev, emptyLine()])}
+                    onClick={() => { setLines((prev) => [...prev, emptyLine()]); setLinePrices((prev) => [...prev, '']) }}
                     className="flex items-center gap-1 text-xs text-violet-600 hover:text-violet-700 font-medium"
                   >
                     <Plus size={13} /> Agregar insumo
@@ -223,15 +240,21 @@ export default function PurchaseOrders() {
 
                 <div className="space-y-2">
                   {/* Header */}
-                  <div className="grid grid-cols-[1fr_90px_90px_80px_32px] gap-2 text-xs text-slate-400 px-1">
-                    <span>Insumo</span><span>Cantidad</span><span>Costo unit.</span><span className="text-right">Total</span><span />
+                  <div className="grid grid-cols-[1fr_100px_110px_90px_32px] gap-2 text-xs text-slate-400 px-1">
+                    <span>Insumo</span>
+                    <span>Cantidad</span>
+                    <span>Precio total $</span>
+                    <span className="text-right">Costo/unidad</span>
+                    <span />
                   </div>
 
                   {lines.map((line, i) => {
-                    const lineTotal = (line.quantity * line.unitCost) || 0
                     const selectedItem = inventoryItems.find((it) => it.id === line.inventoryItemId)
+                    const unitLabel = selectedItem ? (UNIT_LABELS[selectedItem.unitType as UnitType] ?? '') : ''
+                    const totalPrice = parseFloat(linePrices[i] ?? '')
+                    const unitCost = totalPrice > 0 && line.quantity > 0 ? totalPrice / line.quantity : null
                     return (
-                      <div key={i} className="grid grid-cols-[1fr_90px_90px_80px_32px] gap-2 items-center">
+                      <div key={i} className="grid grid-cols-[1fr_100px_110px_90px_32px] gap-2 items-center">
                         <select
                           value={line.inventoryItemId || ''}
                           onChange={(e) => updateLine(i, { inventoryItemId: Number(e.target.value) })}
@@ -244,22 +267,34 @@ export default function PurchaseOrders() {
                             </option>
                           ))}
                         </select>
+                        <div className="relative">
+                          <input
+                            type="number" min="0" step="0.001"
+                            value={line.quantity || ''}
+                            onChange={(e) => {
+                              const qty = parseFloat(e.target.value) || 0
+                              const price = parseFloat(linePrices[i] ?? '')
+                              updateLine(i, { quantity: qty, unitCost: price > 0 && qty > 0 ? price / qty : 0 })
+                            }}
+                            placeholder={unitLabel || 'cant.'}
+                            className="w-full border border-slate-300 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:border-violet-500"
+                          />
+                          {unitLabel && (
+                            <span className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-slate-400 pointer-events-none">{unitLabel}</span>
+                          )}
+                        </div>
                         <input
-                          type="number" min="0" step="0.001"
-                          value={line.quantity || ''}
-                          onChange={(e) => updateLine(i, { quantity: parseFloat(e.target.value) || 0 })}
-                          placeholder={selectedItem ? UNIT_LABELS[selectedItem.unitType as UnitType] ?? '' : ''}
+                          type="number" min="0" step="0.01"
+                          value={linePrices[i] ?? ''}
+                          onChange={(e) => updateLinePrice(i, e.target.value)}
+                          placeholder="lo que pagaste"
                           className="border border-slate-300 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:border-violet-500"
                         />
-                        <input
-                          type="number" min="0" step="0.0001"
-                          value={line.unitCost || ''}
-                          onChange={(e) => updateLine(i, { unitCost: parseFloat(e.target.value) || 0 })}
-                          placeholder="$0.00"
-                          className="border border-slate-300 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:border-violet-500"
-                        />
-                        <span className="text-sm font-medium text-slate-700 text-right">
-                          {fmt(lineTotal)}
+                        <span className="text-xs font-medium text-right">
+                          {unitCost !== null
+                            ? <span className="text-violet-700">${unitCost.toFixed(4)}/{unitLabel || 'u'}</span>
+                            : <span className="text-slate-300">—</span>
+                          }
                         </span>
                         <button
                           onClick={() => removeLine(i)}
