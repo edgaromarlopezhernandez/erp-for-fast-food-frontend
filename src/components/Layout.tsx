@@ -4,15 +4,16 @@ import { useAuth } from '../auth/AuthContext'
 import {
   LayoutDashboard, Package, Tag, Warehouse, BookOpen,
   ShoppingCart, Users, Receipt, LogOut, Menu, X, Store,
-  PackagePlus, BarChart3, DollarSign, XCircle, Clock
+  PackagePlus, BarChart3, DollarSign, XCircle, Clock, TrendingDown, ArrowLeftRight
 } from 'lucide-react'
 
 const adminLinks = [
-  { to: '/dashboard',       label: 'Dashboard',   icon: LayoutDashboard },
+  { to: '/dashboard',       label: 'Dashboard',    icon: LayoutDashboard },
   { to: '/products',        label: 'Productos',    icon: Package },
   { to: '/categories',      label: 'Categorías',   icon: Tag },
   { to: '/inventory',       label: 'Inventario',   icon: Warehouse },
   { to: '/purchase-orders', label: 'Resurtidos',   icon: PackagePlus },
+  { to: '/requisitions',    label: 'Requisiciones', icon: ArrowLeftRight },
   { to: '/recipes',         label: 'Recetas',      icon: BookOpen },
   { to: '/carts',           label: 'Carritos',     icon: ShoppingCart },
   { to: '/users',           label: 'Empleados',    icon: Users },
@@ -20,13 +21,15 @@ const adminLinks = [
   { to: '/sales',           label: 'Ventas',       icon: Receipt },
   { to: '/shifts',          label: 'Turnos',        icon: Clock },
   { to: '/cancellations',   label: 'Cancelaciones', icon: XCircle },
+  { to: '/expenses',        label: 'Gastos',        icon: TrendingDown },
   { to: '/reports',         label: 'Reportes',     icon: BarChart3 },
 ]
 
 const managerLinks = [
-  { to: '/dashboard',       label: 'Dashboard',   icon: LayoutDashboard },
+  { to: '/dashboard',       label: 'Dashboard',    icon: LayoutDashboard },
   { to: '/inventory',       label: 'Inventario',   icon: Warehouse },
   { to: '/purchase-orders', label: 'Resurtidos',   icon: PackagePlus },
+  { to: '/requisitions',    label: 'Requisiciones', icon: ArrowLeftRight },
   { to: '/payroll',         label: 'Nómina',       icon: DollarSign },
   { to: '/sales',           label: 'Ventas',       icon: Receipt },
   { to: '/reports',         label: 'Reportes',     icon: BarChart3 },
@@ -74,7 +77,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
       <aside className="hidden md:flex md:w-56 flex-col bg-slate-900 text-white">
         <div className="px-4 py-5 border-b border-slate-700 flex items-center gap-2">
           <Store size={22} className="text-violet-400" />
-          <span className="font-semibold text-white truncate">ERP Fast Food</span>
+          <span className="font-semibold text-white truncate">{user?.businessName?.toUpperCase() ?? 'ERP FAST FOOD'}</span>
         </div>
         <NavLinks />
         <div className="px-4 py-4 border-t border-slate-700">
@@ -96,7 +99,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
             <div className="px-4 py-5 border-b border-slate-700 flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <Store size={20} className="text-violet-400" />
-                <span className="font-semibold">ERP Fast Food</span>
+                <span className="font-semibold">{user?.businessName?.toUpperCase() ?? 'ERP FAST FOOD'}</span>
               </div>
               <button onClick={() => setOpen(false)} className="text-slate-400">
                 <X size={20} />
@@ -122,7 +125,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
           </button>
           <div className="flex items-center gap-2">
             <Store size={18} className="text-violet-600" />
-            <span className="font-semibold text-slate-800 text-sm">ERP Fast Food</span>
+            <span className="font-semibold text-slate-800 text-sm">{user?.businessName?.toUpperCase() ?? 'ERP FAST FOOD'}</span>
           </div>
           <div className="w-6" />
         </header>

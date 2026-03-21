@@ -1,26 +1,43 @@
 import { useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { register as registerApi } from '../api/auth'
+import { useAuth } from '../auth/AuthContext'
 import { Store } from 'lucide-react'
 
 export default function Register() {
   const navigate = useNavigate()
+  const { login } = useAuth()
   const [form, setForm] = useState({
-    businessName: '', businessSlug: '', name: '', username: '', password: '',
+    businessName: '', businessSlug: '', ownerWhatsapp: '',
+    name: '', username: '', password: '',
   })
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
 
-  const set = (key: string) => (e: React.ChangeEvent<HTMLInputElement>) =>
-    setForm({ ...form, [key]: e.target.value })
+  const toSlug = (text: string) =>
+    text.toLowerCase()
+      .normalize('NFD').replace(/[\u0300-\u036f]/g, '') // quita acentos
+      .replace(/[^a-z0-9\s-]/g, '')                    // solo letras, números, espacios y guiones
+      .trim().replace(/\s+/g, '-')                      // espacios → guiones
+
+  const set = (key: string) => (e: React.ChangeEvent<HTMLInputElement>) => {
+    const value = e.target.value
+    if (key === 'businessName') {
+      setForm({ ...form, businessName: value, businessSlug: toSlug(value) })
+    } else {
+      setForm({ ...form, [key]: value })
+    }
+  }
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     setError('')
     setLoading(true)
     try {
-      await registerApi(form)
-      navigate('/login')
+      const res = await registerApi(form)
+      // Backend returns a JWT — log the user in directly, no need to visit /login
+      login({ token: res.token, role: 'ADMIN', tenantId: res.tenantId, businessName: res.businessName })
+      navigate('/dashboard')
     } catch (err: unknown) {
       const msg = (err as { response?: { data?: { message?: string } } })?.response?.data?.message
       setError(msg || 'Error al registrar el negocio')
@@ -51,7 +68,7 @@ export default function Register() {
             <Store size={28} className="text-white" />
           </div>
           <h1 className="text-2xl font-bold text-white">Registra tu negocio</h1>
-          <p className="text-slate-400 text-sm mt-1">Empieza a controlar tus ventas</p>
+          <p className="text-slate-400 text-sm mt-1">6 meses gratis · sin tarjeta</p>
         </div>
 
         <form onSubmit={handleSubmit} className="bg-slate-800 rounded-2xl p-6 space-y-4">
@@ -62,10 +79,24 @@ export default function Register() {
           )}
 
           {field('Nombre del negocio', 'businessName', 'text', 'Elotes El Chavo')}
-          {field('Identificador (slug)', 'businessSlug', 'text', 'elotes-el-chavo')}
+
+          {form.businessSlug && (
+            <div>
+              <label className="block text-sm font-medium text-slate-400 mb-1.5">
+                Identificador único
+              </label>
+              <div className="w-full bg-slate-900 text-slate-400 rounded-lg px-4 py-2.5 text-sm border border-slate-700 font-mono">
+                {form.businessSlug}
+              </div>
+            </div>
+          )}
+
+          {field('WhatsApp del dueño', 'ownerWhatsapp', 'tel', '5215512345678')}
+
           <hr className="border-slate-700" />
-          {field('Tu nombre', 'name', 'text', 'Edgar')}
-          {field('Usuario (admin)', 'username', 'text', 'edgar')}
+
+          {field('Tu nombre completo', 'name', 'text', 'Edgar García')}
+          {field('Elige tu usuario de acceso', 'username', 'text', 'edgar')}
           {field('Contraseña', 'password', 'password', '••••••••')}
 
           <button
@@ -73,7 +104,7 @@ export default function Register() {
             disabled={loading}
             className="w-full bg-violet-600 hover:bg-violet-700 disabled:opacity-50 text-white font-semibold rounded-lg py-2.5 text-sm transition-colors"
           >
-            {loading ? 'Registrando...' : 'Crear cuenta'}
+            {loading ? 'Registrando...' : 'Crear cuenta gratis'}
           </button>
         </form>
 

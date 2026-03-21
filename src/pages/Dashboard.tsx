@@ -1,41 +1,86 @@
+import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { getInventory } from '../api/inventory'
+import { getInventory, getCartStockAnalysis } from '../api/inventory'
 import { getSales } from '../api/sales'
 import { getCarts } from '../api/carts'
 import { getPayrollDueToday } from '../api/payroll'
 import { getCancellationRequests } from '../api/cancellations'
 import { getShifts } from '../api/shifts'
-import { AlertTriangle, TrendingUp, ShoppingBag, Warehouse, Bell, DollarSign, XCircle, Clock } from 'lucide-react'
+import {
+  AlertTriangle, TrendingUp, ShoppingBag, Warehouse,
+  Bell, DollarSign, XCircle, Clock, LayoutGrid,
+} from 'lucide-react'
 import { Link } from 'react-router-dom'
 
 export default function Dashboard() {
-  const { data: inventory = [] } = useQuery({ queryKey: ['inventory'],     queryFn: getInventory })
-  const { data: sales = [] }     = useQuery({ queryKey: ['sales'],          queryFn: () => getSales() })
-  const { data: carts = [] }     = useQuery({ queryKey: ['carts'],          queryFn: getCarts })
+  const [selectedCartId, setSelectedCartId] = useState<number | undefined>(undefined)
+  const isCartView = selectedCartId !== undefined
+
+  const { data: carts = [] } = useQuery({ queryKey: ['carts'], queryFn: getCarts })
+  const activeCarts = carts.filter((c) => c.active)
+  const selectedCart = activeCarts.find((c) => c.id === selectedCartId)
+
+  const { data: sales = [] } = useQuery({
+    queryKey: ['sales', selectedCartId],
+    queryFn: () => getSales(selectedCartId),
+  })
+
+  const { data: inventory = [] } = useQuery({
+    queryKey: ['inventory', selectedCartId],
+    queryFn: () => getInventory(selectedCartId),
+  })
+
+  const { data: analysis } = useQuery({
+    queryKey: ['cart-analysis', selectedCartId, 30],
+    queryFn: () => getCartStockAnalysis(selectedCartId!, 30),
+    enabled: isCartView,
+  })
+
+  // Global alerts — always shown regardless of filter
   const { data: duePayroll = [] }     = useQuery({ queryKey: ['payroll-due'],    queryFn: getPayrollDueToday })
   const { data: pendingCancels = [] } = useQuery({ queryKey: ['cancellation-requests', 'PENDING'], queryFn: () => getCancellationRequests('PENDING') })
   const { data: pendingShifts = [] }  = useQuery({ queryKey: ['shifts', 'PENDING_APPROVAL'], queryFn: () => getShifts('PENDING_APPROVAL') })
 
   const todaySales = sales.filter((s) => {
     const d = new Date(s.soldAt)
-    const now = new Date()
-    return d.toDateString() === now.toDateString() && s.status === 'COMPLETED'
+    return d.toDateString() === new Date().toDateString() && s.status === 'COMPLETED'
   })
-
   const todayTotal = todaySales.reduce((sum, s) => sum + s.totalAmount, 0)
+
+  // General view
   const lowStock = inventory.filter((i) => i.belowMinimum)
 
-  const cartSales = carts.map((cart) => {
+  // Cart view — from analysis
+  const criticalItems = analysis?.items.filter((i) => i.status === 'CRITICAL') ?? []
+  const lowItems      = analysis?.items.filter((i) => i.status === 'LOW') ?? []
+
+  // Per-cart breakdown (only for general view)
+  const cartSales = activeCarts.map((cart) => {
     const cartToday = todaySales.filter((s) => s.cartId === cart.id)
-    const total = cartToday.reduce((sum, s) => sum + s.totalAmount, 0)
-    return { ...cart, count: cartToday.length, total }
+    return { ...cart, count: cartToday.length, total: cartToday.reduce((sum, s) => sum + s.totalAmount, 0) }
   })
 
   return (
     <div className="space-y-6">
-      <h2 className="text-xl font-bold text-slate-800">Dashboard</h2>
+      {/* Header + filter */}
+      <div className="flex items-center justify-between flex-wrap gap-3">
+        <h2 className="text-xl font-bold text-slate-800">Dashboard</h2>
+        <div className="flex items-center gap-2">
+          <LayoutGrid size={15} className="text-slate-400 shrink-0" />
+          <select
+            value={selectedCartId ?? ''}
+            onChange={(e) => setSelectedCartId(e.target.value === '' ? undefined : Number(e.target.value))}
+            className="border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-700 bg-white focus:outline-none focus:border-violet-500 cursor-pointer"
+          >
+            <option value="">Negocio general</option>
+            {activeCarts.map((c) => (
+              <option key={c.id} value={c.id}>{c.name}</option>
+            ))}
+          </select>
+        </div>
+      </div>
 
-      {/* Alerta de nómina */}
+      {/* Global alerts */}
       {duePayroll.length > 0 && (
         <div className="bg-amber-50 border border-amber-300 rounded-xl p-4">
           <div className="flex items-center justify-between">
@@ -67,7 +112,6 @@ export default function Dashboard() {
         </div>
       )}
 
-      {/* Alerta de cierres de turno pendientes */}
       {pendingShifts.length > 0 && (
         <div className="bg-blue-50 border border-blue-200 rounded-xl p-4">
           <div className="flex items-center justify-between">
@@ -85,7 +129,11 @@ export default function Dashboard() {
                 <li key={s.id} className="flex items-center justify-between text-sm text-blue-700">
                   <span><span className="font-medium">{s.sellerName}</span> · {s.cartName}</span>
                   <span className={`font-semibold ${diff < 0 ? 'text-red-500' : diff > 0 ? 'text-amber-600' : 'text-blue-700'}`}>
-                    {diff === 0 ? 'Cuadra' : diff > 0 ? `+${s.difference?.toLocaleString('es-MX', { style: 'currency', currency: 'MXN' })} sobrante` : `${s.difference?.toLocaleString('es-MX', { style: 'currency', currency: 'MXN' })} faltante`}
+                    {diff === 0
+                      ? 'Cuadra'
+                      : diff > 0
+                        ? `+${s.difference?.toLocaleString('es-MX', { style: 'currency', currency: 'MXN' })} sobrante`
+                        : `${s.difference?.toLocaleString('es-MX', { style: 'currency', currency: 'MXN' })} faltante`}
                   </span>
                 </li>
               )
@@ -94,7 +142,6 @@ export default function Dashboard() {
         </div>
       )}
 
-      {/* Alerta de cancelaciones pendientes */}
       {pendingCancels.length > 0 && (
         <div className="bg-red-50 border border-red-200 rounded-xl p-4">
           <div className="flex items-center justify-between">
@@ -123,21 +170,56 @@ export default function Dashboard() {
 
       {/* KPI Cards */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <KpiCard icon={<TrendingUp className="text-green-500" size={20} />}
-          label="Ventas hoy" value={`$${todayTotal.toFixed(2)}`} color="green" />
-        <KpiCard icon={<ShoppingBag className="text-violet-500" size={20} />}
-          label="Transacciones hoy" value={todaySales.length.toString()} color="violet" />
-        <KpiCard icon={<ShoppingBag className="text-blue-500" size={20} />}
-          label="Carritos activos" value={carts.length.toString()} color="blue" />
-        <KpiCard icon={<AlertTriangle className="text-red-500" size={20} />}
-          label="Stock bajo mínimo" value={lowStock.length.toString()} color="red" />
+        <KpiCard
+          icon={<TrendingUp className="text-green-500" size={20} />}
+          label={isCartView ? `Ventas hoy — ${selectedCart?.name}` : 'Ventas hoy'}
+          value={todayTotal.toLocaleString('es-MX', { style: 'currency', currency: 'MXN' })}
+          color="green"
+        />
+        <KpiCard
+          icon={<ShoppingBag className="text-violet-500" size={20} />}
+          label={isCartView ? `Transacciones — ${selectedCart?.name}` : 'Transacciones hoy'}
+          value={todaySales.length.toString()}
+          color="violet"
+        />
+        {isCartView ? (
+          <>
+            <KpiCard
+              icon={<AlertTriangle className="text-red-500" size={20} />}
+              label="Insumos críticos (< 1 día)"
+              value={criticalItems.length.toString()}
+              color="red"
+            />
+            <KpiCard
+              icon={<AlertTriangle className="text-amber-500" size={20} />}
+              label="Insumos bajos (< 3 días)"
+              value={lowItems.length.toString()}
+              color="amber"
+            />
+          </>
+        ) : (
+          <>
+            <KpiCard
+              icon={<ShoppingBag className="text-blue-500" size={20} />}
+              label="Carritos activos"
+              value={activeCarts.length.toString()}
+              color="blue"
+            />
+            <KpiCard
+              icon={<AlertTriangle className="text-red-500" size={20} />}
+              label="Stock bajo mínimo"
+              value={lowStock.length.toString()}
+              color="red"
+            />
+          </>
+        )}
       </div>
 
-      {/* Alerta stock */}
-      {lowStock.length > 0 && (
+      {/* Stock alerts */}
+      {!isCartView && lowStock.length > 0 && (
         <div className="bg-red-50 border border-red-200 rounded-xl p-4">
           <div className="flex items-center gap-2 text-red-700 font-semibold mb-3">
-            <AlertTriangle size={18} /> Insumos bajo mínimo
+            <AlertTriangle size={18} /> Insumos bajo mínimo — Bodega general
           </div>
           <ul className="space-y-1">
             {lowStock.map((item) => (
@@ -150,39 +232,70 @@ export default function Dashboard() {
         </div>
       )}
 
-      {/* Por carrito */}
-      <div>
-        <h3 className="text-sm font-semibold text-slate-500 uppercase tracking-wide mb-3">
-          Rendimiento por carrito — Hoy
-        </h3>
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-          {cartSales.map((cart) => (
-            <div key={cart.id} className="bg-white rounded-xl border border-slate-200 p-4">
-              <div className="flex items-center gap-2 mb-2">
-                <Warehouse size={16} className="text-slate-400" />
-                <span className="font-semibold text-slate-700">{cart.name}</span>
-              </div>
-              {cart.location && <p className="text-xs text-slate-400 mb-2">{cart.location}</p>}
-              <div className="flex justify-between text-sm">
-                <span className="text-slate-500">{cart.count} ventas</span>
-                <span className="font-bold text-green-600">${cart.total.toFixed(2)}</span>
-              </div>
-            </div>
-          ))}
-          {carts.length === 0 && (
-            <p className="text-slate-400 text-sm col-span-full">No hay carritos registrados aún.</p>
-          )}
+      {isCartView && (criticalItems.length > 0 || lowItems.length > 0) && (
+        <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+          <div className="px-4 py-3 border-b border-slate-100 flex items-center gap-2 text-slate-700 font-semibold text-sm">
+            <AlertTriangle size={16} className="text-amber-500" />
+            Insumos con stock bajo — {selectedCart?.name}
+            <span className="ml-auto text-xs text-slate-400 font-normal">Basado en últimos 30 días</span>
+          </div>
+          <ul className="divide-y divide-slate-100">
+            {[...criticalItems, ...lowItems].map((item) => {
+              const unitLabel = item.unitType === 'PIECE' ? 'pza' : item.unitType === 'GRAM' ? 'g' : 'ml'
+              const isCritical = item.status === 'CRITICAL'
+              return (
+                <li key={item.inventoryItemId} className={`flex items-center justify-between px-4 py-2.5 text-sm ${isCritical ? 'bg-red-50/50' : 'bg-amber-50/30'}`}>
+                  <span className={`font-medium ${isCritical ? 'text-red-700' : 'text-amber-700'}`}>{item.name}</span>
+                  <div className="flex items-center gap-3">
+                    <span className="text-slate-500">{item.currentCartStock.toFixed(1)} {unitLabel}</span>
+                    <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${isCritical ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-700'}`}>
+                      {item.estimatedDaysRemaining !== null ? `${item.estimatedDaysRemaining.toFixed(1)}d` : '—'}
+                    </span>
+                  </div>
+                </li>
+              )
+            })}
+          </ul>
         </div>
-      </div>
+      )}
+
+      {/* Per-cart breakdown — general view only */}
+      {!isCartView && (
+        <div>
+          <h3 className="text-sm font-semibold text-slate-500 uppercase tracking-wide mb-3">
+            Rendimiento por carrito — Hoy
+          </h3>
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            {cartSales.map((cart) => (
+              <div key={cart.id} className="bg-white rounded-xl border border-slate-200 p-4">
+                <div className="flex items-center gap-2 mb-2">
+                  <Warehouse size={16} className="text-slate-400" />
+                  <span className="font-semibold text-slate-700">{cart.name}</span>
+                </div>
+                {cart.location && <p className="text-xs text-slate-400 mb-2">{cart.location}</p>}
+                <div className="flex justify-between text-sm">
+                  <span className="text-slate-500">{cart.count} ventas</span>
+                  <span className="font-bold text-green-600">
+                    {cart.total.toLocaleString('es-MX', { style: 'currency', currency: 'MXN' })}
+                  </span>
+                </div>
+              </div>
+            ))}
+            {activeCarts.length === 0 && (
+              <p className="text-slate-400 text-sm col-span-full">No hay carritos registrados aún.</p>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   )
 }
 
 function KpiCard({ icon, label, value, color }: {
   icon: React.ReactNode; label: string; value: string
-  color: 'green' | 'violet' | 'blue' | 'red'
+  color: 'green' | 'violet' | 'blue' | 'red' | 'amber'
 }) {
-  const bg = { green: 'bg-green-50', violet: 'bg-violet-50', blue: 'bg-blue-50', red: 'bg-red-50' }
+  const bg = { green: 'bg-green-50', violet: 'bg-violet-50', blue: 'bg-blue-50', red: 'bg-red-50', amber: 'bg-amber-50' }
   return (
     <div className={`${bg[color]} rounded-xl p-4`}>
       <div className="mb-2">{icon}</div>

@@ -1,11 +1,14 @@
 // ── Auth ──────────────────────────────────────────────────────────────────────
 export interface LoginRequest { username: string; password: string }
-export interface LoginResponse { token: string; role: UserRole; tenantId: number }
+export interface LoginResponse { token: string; role: UserRole; tenantId: number; businessName?: string | null }
 export interface RegisterRequest {
-  businessName: string; businessSlug: string
+  businessName: string; businessSlug: string; ownerWhatsapp: string
   name: string; username: string; password: string
 }
-export interface RegisterResponse { tenantId: number; businessName: string; adminUsername: string }
+export interface RegisterResponse {
+  tenantId: number; businessName: string; adminUsername: string
+  token: string; subscriptionStatus: string; trialEndsAt: string
+}
 
 // ── Users ─────────────────────────────────────────────────────────────────────
 export type UserRole = 'ADMIN' | 'MANAGER' | 'CASHIER'
@@ -46,19 +49,21 @@ export interface ProductRequest {
 // ── Inventory ─────────────────────────────────────────────────────────────────
 export type UnitType = 'PIECE' | 'GRAM' | 'MILLILITER'
 export type MovementType =
-  | 'PURCHASE' | 'TRANSFER_TO_CART' | 'SALE_DEDUCTION'
+  | 'PURCHASE' | 'TRANSFER_TO_CART' | 'TRANSIT_DISPATCHED' | 'SALE_DEDUCTION'
   | 'MANUAL_ADJUSTMENT' | 'WASTE' | 'RETURN' | 'OPENING_STOCK'
 
 export interface InventoryItem {
   id: number; name: string; unitType: UnitType
-  currentStock: number; minimumStock: number; averageCost: number
+  currentStock: number   // stock de la ubicación solicitada (bodega o carrito)
+  centralStock: number   // siempre el stock de bodega general
+  minimumStock: number; averageCost: number
   belowMinimum: boolean; active: boolean
 }
 export interface InventoryItemRequest {
   name: string; unitType: UnitType; minimumStock: number; averageCost: number
 }
 export interface StockAdjustmentRequest {
-  inventoryItemId: number; movementType: MovementType; quantity: number; notes?: string
+  inventoryItemId: number; movementType: MovementType; quantity: number; unitCost?: number; notes?: string
 }
 export interface InventoryMovement {
   id: number; movementType: MovementType; quantity: number; unitCost?: number
@@ -107,14 +112,23 @@ export interface PurchaseOrderSummary {
 export interface PayrollSummary {
   id: number; employeeName: string; amount: number; paidDate: string; periodLabel: string
 }
+export interface ExpenseSummary {
+  id: number; date: string; amount: number
+  description: string; category?: string; cartName?: string; createdByName?: string
+}
 export interface FinancialReport {
   year: number; month: number; monthLabel: string
   cartId?: number; cartName?: string
+  reportScope: 'GENERAL' | 'CART'
+  restockingIncluded: boolean
   totalSales: number; totalRestocking: number; totalPayroll: number
+  totalOperationalExpenses: number
   totalExpenses: number; netProfit: number; profitMarginPct: number
   saleCount: number; purchaseOrderCount: number; payrollPaymentCount: number
+  operationalExpenseCount: number
   purchaseOrders: PurchaseOrderSummary[]
   payrollPayments: PayrollSummary[]
+  operationalExpenses: ExpenseSummary[]
 }
 
 // ── Purchase Orders (Resurtidos) ───────────────────────────────────────────────
@@ -153,10 +167,10 @@ export interface PurchaseOrder {
 }
 
 // ── Recipes ───────────────────────────────────────────────────────────────────
-export interface RecipeItemRequest { inventoryItemId: number; quantityRequired: number }
+export interface RecipeItemRequest { inventoryItemId: number; quantityRequired: number; canExclude?: boolean }
 export interface RecipeRequest { productId: number; items: RecipeItemRequest[] }
 export interface RecipeItem {
-  inventoryItemId: number; inventoryItemName: string; unitType: string; quantityRequired: number
+  inventoryItemId: number; inventoryItemName: string; unitType: string; quantityRequired: number; canExclude: boolean
 }
 export interface RecipeExtra {
   id: number; name: string; extraPrice: number

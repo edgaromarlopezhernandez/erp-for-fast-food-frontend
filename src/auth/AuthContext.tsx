@@ -5,6 +5,7 @@ interface AuthUser {
   token: string
   role: UserRole
   tenantId: number
+  businessName: string | null
 }
 
 interface AuthContextType {
@@ -25,7 +26,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   })
 
   const login = (data: LoginResponse) => {
-    const authUser: AuthUser = { token: data.token, role: data.role, tenantId: data.tenantId }
+    const authUser: AuthUser = {
+      token: data.token,
+      role: data.role,
+      tenantId: data.tenantId,
+      businessName: data.businessName ?? null,
+    }
     localStorage.setItem('token', data.token)
     localStorage.setItem('user', JSON.stringify(authUser))
     setUser(authUser)

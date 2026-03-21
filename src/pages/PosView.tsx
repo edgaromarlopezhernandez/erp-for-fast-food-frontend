@@ -7,11 +7,14 @@ import { getAllRecipes } from '../api/recipes'
 import { getMe } from '../api/users'
 import { getMyCancellationRequests, requestCancellation } from '../api/cancellations'
 import { getMyShift, openShift, closeShift, getMyAttendance } from '../api/shifts'
+import { getRequisitionsByCart, receiveRequisition } from '../api/requisitions'
+import type { RequisitionResponse } from '../api/requisitions'
 import type { Product, Sale, SaleItemRequest, SendTicketResponse, Recipe, RecipeExtra } from '../types'
 
 import {
   ShoppingCart, Trash2, CheckCircle, LogOut, Minus, Plus,
   Warehouse, ChevronDown, ChevronUp, XCircle, Clock, X, DollarSign, Lock, MessageCircle, Sparkles,
+  PackageCheck, Truck, ClipboardCheck,
 } from 'lucide-react'
 import { useAuth } from '../auth/AuthContext'
 import { useNavigate } from 'react-router-dom'
@@ -72,6 +75,17 @@ export default function PosView() {
   const [manualCart, setManualCart] = useState<number | null>(null)
   const selectedCart = assignedCartId ?? manualCart
 
+  const { data: cartRequisitions = [] } = useQuery<RequisitionResponse[]>({
+    queryKey: ['cart-requisitions', selectedCart],
+    queryFn: () => getRequisitionsByCart(selectedCart!),
+    enabled: !!selectedCart,
+    refetchInterval: 30_000,
+  })
+
+  const activeRequisition = cartRequisitions.find(r =>
+    r.status === 'SOLICITADA' || r.status === 'APROBADA' || r.status === 'EN_TRANSITO'
+  ) ?? null
+
   // Shift open form
   const [startingCash, setStartingCash] = useState('')
   const [declaredCash, setDeclaredCash] = useState('')
@@ -103,6 +117,13 @@ export default function PosView() {
   const [ticketError, setTicketError] = useState('')
   // Auto-dismiss confirmation after sending ticket
   const [ticketConfirmation, setTicketConfirmation] = useState<SendTicketResponse | null>(null)
+
+  // Blind receipt (resurtido)
+  const [showReceiptModal, setShowReceiptModal] = useState(false)
+  const [receivedQtys, setReceivedQtys] = useState<Record<number, string>>({})
+  const [receiptNotes, setReceiptNotes] = useState('')
+  const [receiptError, setReceiptError] = useState('')
+  const [receiptDone, setReceiptDone] = useState(false)
 
   const addLineToCart = (product: Product, extras: SelectedExtraLine[], exclusions: ExclusionLine[]) => {
     const key = computeLineKey(product.id, extras, exclusions)
@@ -233,6 +254,39 @@ export default function PosView() {
   const openCancelModal = (sale: Sale) => {
     setCancelReason(''); setCancelError(''); setCancelTarget(sale)
   }
+
+  const openReceiptModal = () => {
+    if (!activeRequisition || activeRequisition.status !== 'EN_TRANSITO') return
+    const init: Record<number, string> = {}
+    activeRequisition.items.forEach((item) => { init[item.id] = '' })
+    setReceivedQtys(init)
+    setReceiptNotes('')
+    setReceiptError('')
+    setReceiptDone(false)
+    setShowReceiptModal(true)
+  }
+
+  const receiveMut = useMutation({
+    mutationFn: () => {
+      const quantities: Record<number, number> = {}
+      for (const [id, val] of Object.entries(receivedQtys)) {
+        quantities[Number(id)] = Number(val) || 0
+      }
+      return receiveRequisition(activeRequisition!.id, {
+        receivedQuantities: quantities,
+        receiptNotes: receiptNotes.trim() || undefined,
+      })
+    },
+    onSuccess: () => {
+      setReceiptDone(true)
+      qc.invalidateQueries({ queryKey: ['cart-requisitions', selectedCart] })
+      setTimeout(() => setShowReceiptModal(false), 2000)
+    },
+    onError: (err: unknown) => {
+      const msg = (err as { response?: { data?: { message?: string } } })?.response?.data?.message
+      setReceiptError(msg || 'Error al registrar la recepción')
+    },
+  })
 
   const submitCancelRequest = () => {
     if (!cancelReason.trim()) { setCancelError('El motivo es obligatorio'); return }
@@ -631,6 +685,58 @@ export default function PosView() {
             </div>
           )}
         </div>
+
+        {/* ── Resurtido / requisición activa ───────────────────────────────────── */}
+        {activeRequisition && (
+          <div className="border-t border-slate-800">
+            {activeRequisition.status === 'EN_TRANSITO' ? (
+              <div className="px-4 py-3">
+                <div className="bg-emerald-500/10 border border-emerald-500/30 rounded-xl p-3 space-y-2">
+                  <div className="flex items-center gap-2">
+                    <Truck size={14} className="text-emerald-400 shrink-0" />
+                    <span className="text-emerald-300 text-xs font-semibold uppercase tracking-wide">
+                      Mercancía en camino
+                    </span>
+                  </div>
+                  <p className="text-slate-400 text-xs">
+                    Hay un resurtido en tránsito para este carrito. Cuando recibas la mercancía,
+                    haz el conteo y regístralo.
+                  </p>
+                  {activeRequisition.dispatchNotes && (
+                    <p className="text-xs text-emerald-200/70 italic">"{activeRequisition.dispatchNotes}"</p>
+                  )}
+                  <button
+                    onClick={openReceiptModal}
+                    className="w-full bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold py-2 rounded-lg flex items-center justify-center gap-1.5 transition-colors"
+                  >
+                    <ClipboardCheck size={13} />
+                    Registrar recepción (conteo ciego)
+                  </button>
+                </div>
+              </div>
+            ) : activeRequisition.status === 'APROBADA' ? (
+              <div className="px-4 py-3">
+                <div className="bg-blue-500/10 border border-blue-500/20 rounded-xl p-3 flex items-start gap-2">
+                  <PackageCheck size={14} className="text-blue-400 shrink-0 mt-0.5" />
+                  <div>
+                    <p className="text-blue-300 text-xs font-semibold">Resurtido aprobado</p>
+                    <p className="text-slate-500 text-xs mt-0.5">En espera de despacho por el administrador.</p>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="px-4 py-3">
+                <div className="bg-amber-500/10 border border-amber-500/20 rounded-xl p-3 flex items-start gap-2">
+                  <Clock size={14} className="text-amber-400 shrink-0 mt-0.5" />
+                  <div>
+                    <p className="text-amber-300 text-xs font-semibold">Requisición pendiente</p>
+                    <p className="text-slate-500 text-xs mt-0.5">Esperando aprobación del administrador.</p>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {/* ── Modal personalización de producto ───────────────────────────────── */}
@@ -646,37 +752,61 @@ export default function PosView() {
             </div>
 
             <div className="overflow-y-auto px-5 pb-2 space-y-4">
-              {/* Ingredientes base — removibles */}
-              {customRecipe.items.length > 0 && (
-                <div>
-                  <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">
-                    Ingredientes base <span className="font-normal normal-case text-slate-400">(toca para quitar)</span>
-                  </p>
-                  <div className="flex flex-wrap gap-2">
-                    {customRecipe.items.map((item) => {
-                      const excluded = selExclusions.has(item.inventoryItemId)
-                      return (
-                        <button
-                          key={item.inventoryItemId}
-                          onClick={() => setSelExclusions(prev => {
-                            const next = new Set(prev)
-                            excluded ? next.delete(item.inventoryItemId) : next.add(item.inventoryItemId)
-                            return next
+              {/* Ingredientes base */}
+              {customRecipe.items.length > 0 && (() => {
+                const excludable = customRecipe.items.filter(i => i.canExclude)
+                const fixed      = customRecipe.items.filter(i => !i.canExclude)
+                return (
+                  <div className="space-y-3">
+                    {excludable.length > 0 && (
+                      <div>
+                        <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">
+                          Ingredientes <span className="font-normal normal-case text-slate-400">(toca para quitar)</span>
+                        </p>
+                        <div className="flex flex-wrap gap-2">
+                          {excludable.map((item) => {
+                            const excluded = selExclusions.has(item.inventoryItemId)
+                            return (
+                              <button
+                                key={item.inventoryItemId}
+                                onClick={() => setSelExclusions(prev => {
+                                  const next = new Set(prev)
+                                  excluded ? next.delete(item.inventoryItemId) : next.add(item.inventoryItemId)
+                                  return next
+                                })}
+                                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm font-medium border transition-all ${
+                                  excluded
+                                    ? 'bg-red-50 border-red-200 text-red-500 line-through'
+                                    : 'bg-slate-100 border-slate-200 text-slate-700 hover:bg-slate-200'
+                                }`}
+                              >
+                                {excluded && <X size={11} />}
+                                {item.inventoryItemName}
+                              </button>
+                            )
                           })}
-                          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm font-medium border transition-all ${
-                            excluded
-                              ? 'bg-red-50 border-red-200 text-red-500 line-through'
-                              : 'bg-slate-100 border-slate-200 text-slate-700 hover:bg-slate-200'
-                          }`}
-                        >
-                          {excluded && <X size={11} />}
-                          {item.inventoryItemName}
-                        </button>
-                      )
-                    })}
+                        </div>
+                      </div>
+                    )}
+                    {fixed.length > 0 && (
+                      <div>
+                        <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2">Siempre incluido</p>
+                        <div className="flex flex-wrap gap-2">
+                          {fixed.map((item) => (
+                            <span
+                              key={item.inventoryItemId}
+                              className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm font-medium border bg-slate-50 border-slate-200 text-slate-400 cursor-default"
+                            >
+                              <Lock size={10} />
+                              {item.inventoryItemName}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
                   </div>
-                </div>
-              )}
+                )
+              })()}
 
               {/* Extras opcionales */}
               {customRecipe.extras.filter(e => e.active).length > 0 && (
@@ -913,6 +1043,101 @@ export default function PosView() {
                 {closeShiftMut.isPending ? 'Cerrando...' : 'Enviar cierre'}
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Modal recepción ciega de resurtido ───────────────────────────────── */}
+      {showReceiptModal && activeRequisition?.status === 'EN_TRANSITO' && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70">
+          <div className="bg-white rounded-2xl w-full max-w-md shadow-xl flex flex-col max-h-[90vh]">
+
+            {/* Header */}
+            <div className="flex items-center justify-between px-5 pt-5 pb-3 border-b border-slate-100">
+              <div className="flex items-center gap-2">
+                <ClipboardCheck size={18} className="text-emerald-600" />
+                <div>
+                  <h3 className="font-bold text-slate-800">Conteo de recepción</h3>
+                  <p className="text-xs text-slate-400">Cuenta físicamente cada ítem e ingresa lo que recibiste</p>
+                </div>
+              </div>
+              <button onClick={() => setShowReceiptModal(false)}>
+                <X size={20} className="text-slate-400" />
+              </button>
+            </div>
+
+            {receiptDone ? (
+              <div className="flex flex-col items-center justify-center py-10 gap-3">
+                <CheckCircle size={40} className="text-emerald-500" />
+                <p className="font-semibold text-slate-700">¡Recepción registrada!</p>
+                <p className="text-xs text-slate-400 text-center px-6">
+                  El sistema comparará lo que recibiste con lo que fue despachado.
+                </p>
+              </div>
+            ) : (
+              <>
+                {/* Nota del despachador */}
+                {activeRequisition.dispatchNotes && (
+                  <div className="mx-5 mt-4 bg-blue-50 border border-blue-200 rounded-lg px-3 py-2">
+                    <p className="text-xs text-blue-600 font-medium">Nota del despachador:</p>
+                    <p className="text-sm text-blue-800 mt-0.5">{activeRequisition.dispatchNotes}</p>
+                  </div>
+                )}
+
+                {/* Lista de ítems — solo nombre y unidad, el vendedor captura cantidad */}
+                <div className="overflow-y-auto px-5 py-4 space-y-3 flex-1">
+                  {activeRequisition.items.map((item) => (
+                    <div key={item.id} className="flex items-center gap-3">
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-medium text-slate-800 truncate">{item.inventoryItemName}</p>
+                        <p className="text-xs text-slate-400 uppercase">{item.unitType}</p>
+                      </div>
+                      <input
+                        type="number"
+                        min="0"
+                        step="0.001"
+                        placeholder="0"
+                        value={receivedQtys[item.id] ?? ''}
+                        onChange={(e) => {
+                          setReceivedQtys((prev) => ({ ...prev, [item.id]: e.target.value }))
+                          setReceiptError('')
+                        }}
+                        className="w-24 border border-slate-300 rounded-lg px-3 py-1.5 text-sm text-right focus:outline-none focus:border-emerald-500 font-mono"
+                      />
+                    </div>
+                  ))}
+                </div>
+
+                {/* Notas opcionales */}
+                <div className="px-5 pb-3">
+                  <textarea
+                    value={receiptNotes}
+                    onChange={(e) => setReceiptNotes(e.target.value)}
+                    rows={2}
+                    placeholder="Notas opcionales (faltante, daños, observaciones...)"
+                    className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-700 focus:outline-none focus:border-emerald-500 resize-none placeholder:text-slate-400"
+                  />
+                  {receiptError && <p className="text-xs text-red-500 mt-1">{receiptError}</p>}
+                </div>
+
+                {/* Acciones */}
+                <div className="px-5 pb-5 flex gap-3">
+                  <button
+                    onClick={() => setShowReceiptModal(false)}
+                    className="flex-1 border border-slate-300 text-slate-700 text-sm py-2 rounded-lg hover:bg-slate-50"
+                  >
+                    Cancelar
+                  </button>
+                  <button
+                    onClick={() => receiveMut.mutate()}
+                    disabled={receiveMut.isPending}
+                    className="flex-1 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-sm font-semibold py-2 rounded-lg"
+                  >
+                    {receiveMut.isPending ? 'Registrando...' : 'Confirmar recepción'}
+                  </button>
+                </div>
+              </>
+            )}
           </div>
         </div>
       )}
