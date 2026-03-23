@@ -124,11 +124,56 @@ export interface FinancialReport {
   totalSales: number; totalRestocking: number; totalPayroll: number
   totalOperationalExpenses: number
   totalExpenses: number; netProfit: number; profitMarginPct: number
+  estimatedCogs: number
+  estimatedGrossProfit: number
+  estimatedGrossMarginPct: number
+  breakEvenRevenue: number | null
+  salesAboveBreakEven: number
+  breakEvenProgressPct: number
   saleCount: number; purchaseOrderCount: number; payrollPaymentCount: number
   operationalExpenseCount: number
   purchaseOrders: PurchaseOrderSummary[]
   payrollPayments: PayrollSummary[]
   operationalExpenses: ExpenseSummary[]
+}
+
+export interface IngredientCostLine {
+  inventoryItemId: number
+  name: string
+  unitType: string
+  quantityRequired: number
+  averageCost: number
+  costContribution: number
+  costSharePct: number
+}
+
+export interface ModifierOptionCost {
+  modifierId: number
+  modifierName: string
+  priceAdjustment: number
+  ingredientCost: number
+}
+
+export interface ModifierGroupCost {
+  groupId: number
+  groupName: string
+  required: boolean
+  minIngredientCost: number
+  maxIngredientCost: number
+  options: ModifierOptionCost[]
+}
+
+export interface ProductProfitability {
+  productId: number
+  productName: string
+  categoryName?: string
+  salePrice: number
+  estimatedCost: number
+  grossMargin: number
+  grossMarginPct: number
+  hasRecipe: boolean
+  recipeBreakdown: IngredientCostLine[]
+  modifierGroups: ModifierGroupCost[]
 }
 
 // ── Purchase Orders (Resurtidos) ───────────────────────────────────────────────
@@ -259,12 +304,59 @@ export interface CancellationRequest {
   adminNotes?: string
 }
 
+// ── Modifier Groups ────────────────────────────────────────────────────────────
+export interface ModifierRecipeItemDetail {
+  id: number
+  inventoryItemId: number
+  inventoryItemName: string
+  unitType: string
+  quantityRequired: number
+}
+
+export interface ProductModifier {
+  id: number
+  name: string
+  priceAdjustment: number
+  sortOrder: number
+  active: boolean
+  recipeItems: ModifierRecipeItemDetail[]
+}
+
+export interface ProductModifierGroup {
+  id: number
+  productId: number
+  productName: string
+  name: string
+  required: boolean
+  minSelections: number
+  maxSelections: number
+  sortOrder: number
+  active: boolean
+  modifiers: ProductModifier[]
+}
+
+export interface ProductModifierGroupRequest {
+  productId: number
+  name: string
+  required: boolean
+  minSelections: number
+  maxSelections: number
+  sortOrder: number
+  modifiers: {
+    name: string
+    priceAdjustment: number
+    sortOrder: number
+    recipeItems: { inventoryItemId: number; quantityRequired: number }[]
+  }[]
+}
+
 // ── Sales ─────────────────────────────────────────────────────────────────────
 export type SaleStatus = 'COMPLETED' | 'CANCELLED'
 export interface SaleItemRequest {
   productId: number; quantity: number
   extraIds?: number[]
   exclusionInventoryItemIds?: number[]
+  selectedModifierIds?: number[]
 }
 export interface SaleRequest { cartId: number; items: SaleItemRequest[]; notes?: string }
 export interface SaleItemDetail {
