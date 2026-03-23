@@ -8,8 +8,9 @@ import { getMe } from '../api/users'
 import { getMyCancellationRequests, requestCancellation } from '../api/cancellations'
 import { getMyShift, openShift, closeShift, getMyAttendance } from '../api/shifts'
 import { getRequisitionsByCart, receiveRequisition } from '../api/requisitions'
+import { getModifierGroups } from '../api/modifiers'
 import type { RequisitionResponse } from '../api/requisitions'
-import type { Product, Sale, SaleItemRequest, SendTicketResponse, Recipe, RecipeExtra } from '../types'
+import type { Product, Sale, SaleItemRequest, SendTicketResponse, Recipe, RecipeExtra, ProductModifierGroup } from '../types'
 
 import {
   ShoppingCart, Trash2, CheckCircle, LogOut, Minus, Plus,
@@ -21,22 +22,27 @@ import { useNavigate } from 'react-router-dom'
 
 interface SelectedExtraLine { recipeExtraId: number; name: string; extraPrice: number; inventoryItemId: number; quantityRequired: number }
 interface ExclusionLine { inventoryItemId: number; name: string }
+interface SelectedModifierLine { modifierId: number; groupId: number; modifierGroupName: string; modifierName: string; priceAdjustment: number }
 interface CartLine {
   product: Product
   quantity: number
   extras: SelectedExtraLine[]
   exclusions: ExclusionLine[]
+  modifiers: SelectedModifierLine[]
   lineKey: string
 }
 
-function computeLineKey(productId: number, extras: SelectedExtraLine[], exclusions: ExclusionLine[]) {
+function computeLineKey(productId: number, extras: SelectedExtraLine[], exclusions: ExclusionLine[], modifiers: SelectedModifierLine[]) {
   const xk = [...extras].sort((a, b) => a.recipeExtraId - b.recipeExtraId).map(e => e.recipeExtraId).join(',')
   const ek = [...exclusions].sort((a, b) => a.inventoryItemId - b.inventoryItemId).map(e => e.inventoryItemId).join(',')
-  return `${productId}_x${xk}_e${ek}`
+  const mk = [...modifiers].sort((a, b) => a.modifierId - b.modifierId).map(m => m.modifierId).join(',')
+  return `${productId}_x${xk}_e${ek}_m${mk}`
 }
 
 function lineUnitPrice(line: CartLine) {
-  return line.product.salePrice + line.extras.reduce((s, e) => s + e.extraPrice, 0)
+  return line.product.salePrice
+    + line.extras.reduce((s, e) => s + e.extraPrice, 0)
+    + line.modifiers.reduce((s, m) => s + m.priceAdjustment, 0)
 }
 
 const PRODUCT_COLORS = [
@@ -101,8 +107,17 @@ export default function PosView() {
   // Customization modal
   const [customProduct, setCustomProduct] = useState<Product | null>(null)
   const [customRecipe, setCustomRecipe] = useState<Recipe | null>(null)
-  const [selExtras, setSelExtras] = useState<Set<number>>(new Set())      // recipeExtraId
-  const [selExclusions, setSelExclusions] = useState<Set<number>>(new Set()) // inventoryItemId
+  const [selExtras, setSelExtras] = useState<Set<number>>(new Set())          // recipeExtraId
+  const [selExclusions, setSelExclusions] = useState<Set<number>>(new Set())  // inventoryItemId
+  const [selModifiers, setSelModifiers] = useState<Map<number, number>>(new Map()) // groupId → modifierId
+  const [modifierError, setModifierError] = useState('')
+
+  // Fetch modifier groups when customization modal is open
+  const { data: modifierGroups = [] } = useQuery<ProductModifierGroup[]>({
+    queryKey: ['modifier-groups', customProduct?.id],
+    queryFn: () => getModifierGroups(customProduct!.id),
+    enabled: !!customProduct,
+  })
 
   // Cancel request modal
   const [cancelTarget, setCancelTarget] = useState<Sale | null>(null)
@@ -125,12 +140,12 @@ export default function PosView() {
   const [receiptError, setReceiptError] = useState('')
   const [receiptDone, setReceiptDone] = useState(false)
 
-  const addLineToCart = (product: Product, extras: SelectedExtraLine[], exclusions: ExclusionLine[]) => {
-    const key = computeLineKey(product.id, extras, exclusions)
+  const addLineToCart = (product: Product, extras: SelectedExtraLine[], exclusions: ExclusionLine[], modifiers: SelectedModifierLine[]) => {
+    const key = computeLineKey(product.id, extras, exclusions, modifiers)
     setCart((prev) => {
       const existing = prev.find((l) => l.lineKey === key)
       if (existing) return prev.map((l) => l.lineKey === key ? { ...l, quantity: l.quantity + 1 } : l)
-      return [...prev, { product, quantity: 1, extras, exclusions, lineKey: key }]
+      return [...prev, { product, quantity: 1, extras, exclusions, modifiers, lineKey: key }]
     })
     setError('')
   }
@@ -142,22 +157,56 @@ export default function PosView() {
       setCustomRecipe(recipe)
       setSelExtras(new Set())
       setSelExclusions(new Set())
+      setSelModifiers(new Map())
+      setModifierError('')
     } else {
-      addLineToCart(product, [], [])
+      addLineToCart(product, [], [], [])
     }
   }
 
   const confirmCustomization = () => {
-    if (!customProduct || !customRecipe) return
-    const extras: SelectedExtraLine[] = customRecipe.extras
-      .filter(e => selExtras.has(e.id))
-      .map(e => ({ recipeExtraId: e.id, name: e.name, extraPrice: e.extraPrice, inventoryItemId: e.inventoryItemId, quantityRequired: e.quantityRequired }))
-    const exclusions: ExclusionLine[] = customRecipe.items
-      .filter(i => selExclusions.has(i.inventoryItemId))
-      .map(i => ({ inventoryItemId: i.inventoryItemId, name: i.inventoryItemName }))
-    addLineToCart(customProduct, extras, exclusions)
+    if (!customProduct) return
+
+    // Validar grupos requeridos
+    for (const group of modifierGroups) {
+      if (group.required && !selModifiers.has(group.id)) {
+        setModifierError(`Selecciona una opción de "${group.name}"`)
+        return
+      }
+    }
+
+    const extras: SelectedExtraLine[] = customRecipe
+      ? customRecipe.extras
+          .filter(e => selExtras.has(e.id))
+          .map(e => ({ recipeExtraId: e.id, name: e.name, extraPrice: e.extraPrice, inventoryItemId: e.inventoryItemId, quantityRequired: e.quantityRequired }))
+      : []
+    const exclusions: ExclusionLine[] = customRecipe
+      ? customRecipe.items
+          .filter(i => selExclusions.has(i.inventoryItemId))
+          .map(i => ({ inventoryItemId: i.inventoryItemId, name: i.inventoryItemName }))
+      : []
+
+    const modifiers: SelectedModifierLine[] = []
+    for (const group of modifierGroups) {
+      const selectedId = selModifiers.get(group.id)
+      if (selectedId) {
+        const mod = group.modifiers.find(m => m.id === selectedId)
+        if (mod) {
+          modifiers.push({
+            modifierId: mod.id,
+            groupId: group.id,
+            modifierGroupName: group.name,
+            modifierName: mod.name,
+            priceAdjustment: mod.priceAdjustment,
+          })
+        }
+      }
+    }
+
+    addLineToCart(customProduct, extras, exclusions, modifiers)
     setCustomProduct(null)
     setCustomRecipe(null)
+    setModifierError('')
   }
 
   const updateQty = (lineKey: string, delta: number) => {
@@ -178,6 +227,7 @@ export default function PosView() {
         quantity: l.quantity,
         extraIds: l.extras.map(e => e.recipeExtraId),
         exclusionInventoryItemIds: l.exclusions.map(e => e.inventoryItemId),
+        selectedModifierIds: l.modifiers.map(m => m.modifierId),
       })),
     }),
     onSuccess: (sale) => {
@@ -553,6 +603,16 @@ export default function PosView() {
                     ))}
                   </div>
                 )}
+                {line.modifiers.length > 0 && (
+                  <div className="mt-1 flex flex-wrap gap-1">
+                    {line.modifiers.map(m => (
+                      <span key={m.modifierId} className="text-xs bg-violet-500/20 text-violet-300 px-1.5 py-0.5 rounded-full">
+                        {m.modifierGroupName}: {m.modifierName}
+                        {m.priceAdjustment > 0 && ` +$${m.priceAdjustment.toFixed(2)}`}
+                      </span>
+                    ))}
+                  </div>
+                )}
                 {line.exclusions.length > 0 && (
                   <div className="mt-1 flex flex-wrap gap-1">
                     {line.exclusions.map(e => (
@@ -740,7 +800,7 @@ export default function PosView() {
       </div>
 
       {/* ── Modal personalización de producto ───────────────────────────────── */}
-      {customProduct && customRecipe && (
+      {customProduct && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70">
           <div className="bg-white rounded-2xl w-full max-w-sm shadow-xl flex flex-col max-h-[90vh]">
             <div className="flex items-center justify-between px-5 pt-5 pb-3">
@@ -748,12 +808,14 @@ export default function PosView() {
                 <h3 className="font-bold text-slate-800">{customProduct.name}</h3>
                 <p className="text-xs text-slate-400">Personaliza este producto</p>
               </div>
-              <button onClick={() => setCustomProduct(null)}><X size={20} className="text-slate-400" /></button>
+              <button onClick={() => { setCustomProduct(null); setCustomRecipe(null); setModifierError('') }}>
+                <X size={20} className="text-slate-400" />
+              </button>
             </div>
 
             <div className="overflow-y-auto px-5 pb-2 space-y-4">
               {/* Ingredientes base */}
-              {customRecipe.items.length > 0 && (() => {
+              {customRecipe && customRecipe.items.length > 0 && (() => {
                 const excludable = customRecipe.items.filter(i => i.canExclude)
                 const fixed      = customRecipe.items.filter(i => !i.canExclude)
                 return (
@@ -809,7 +871,7 @@ export default function PosView() {
               })()}
 
               {/* Extras opcionales */}
-              {customRecipe.extras.filter(e => e.active).length > 0 && (
+              {customRecipe && customRecipe.extras.filter(e => e.active).length > 0 && (
                 <div>
                   <div className="flex items-center gap-1.5 mb-2">
                     <Sparkles size={13} className="text-amber-500" />
@@ -851,15 +913,71 @@ export default function PosView() {
                   </div>
                 </div>
               )}
+
+              {/* Grupos de modificadores */}
+              {modifierGroups.filter(g => g.active).map(group => (
+                <div key={group.id}>
+                  <div className="flex items-center gap-1.5 mb-2">
+                    <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">{group.name}</p>
+                    {group.required && (
+                      <span className="text-xs bg-violet-100 text-violet-600 px-1.5 py-0.5 rounded-full">requerido</span>
+                    )}
+                  </div>
+                  <div className="space-y-1.5">
+                    {group.modifiers.filter(m => m.active).map(modifier => {
+                      const isSelected = selModifiers.get(group.id) === modifier.id
+                      return (
+                        <button
+                          key={modifier.id}
+                          onClick={() => {
+                            setSelModifiers(prev => {
+                              const next = new Map(prev)
+                              isSelected ? next.delete(group.id) : next.set(group.id, modifier.id)
+                              return next
+                            })
+                            setModifierError('')
+                          }}
+                          className={`w-full flex items-center justify-between px-3 py-2 rounded-xl border text-sm transition-all ${
+                            isSelected
+                              ? 'bg-violet-50 border-violet-400 text-slate-800'
+                              : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
+                          }`}
+                        >
+                          <div className="flex items-center gap-2">
+                            <div className={`w-4 h-4 rounded-full border-2 flex items-center justify-center shrink-0 ${
+                              isSelected ? 'bg-violet-500 border-violet-500' : 'border-slate-300'
+                            }`}>
+                              {isSelected && <div className="w-1.5 h-1.5 bg-white rounded-full" />}
+                            </div>
+                            <span className="font-medium">{modifier.name}</span>
+                          </div>
+                          {modifier.priceAdjustment > 0 && (
+                            <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${
+                              isSelected ? 'bg-violet-500 text-white' : 'bg-slate-100 text-slate-500'
+                            }`}>
+                              +${modifier.priceAdjustment.toFixed(2)}
+                            </span>
+                          )}
+                        </button>
+                      )
+                    })}
+                  </div>
+                </div>
+              ))}
             </div>
 
             {/* Footer con precio y botón */}
             <div className="px-5 py-4 border-t border-slate-100 mt-auto">
               {(() => {
-                const extrasTotal = customRecipe.extras
-                  .filter(e => selExtras.has(e.id))
-                  .reduce((s, e) => s + e.extraPrice, 0)
-                const unitTotal = customProduct.salePrice + extrasTotal
+                const extrasTotal = customRecipe
+                  ? customRecipe.extras.filter(e => selExtras.has(e.id)).reduce((s, e) => s + e.extraPrice, 0)
+                  : 0
+                const modifiersTotal = Array.from(selModifiers.entries()).reduce((s, [gid, mid]) => {
+                  const g = modifierGroups.find(g => g.id === gid)
+                  const m = g?.modifiers.find(m => m.id === mid)
+                  return s + (m?.priceAdjustment ?? 0)
+                }, 0)
+                const unitTotal = customProduct.salePrice + extrasTotal + modifiersTotal
                 return (
                   <div className="flex items-center justify-between mb-3">
                     <span className="text-sm text-slate-500">Precio unitario</span>
@@ -867,15 +985,20 @@ export default function PosView() {
                       <span className="text-white text-lg font-bold bg-slate-800 px-3 py-0.5 rounded-lg">
                         ${unitTotal.toFixed(2)}
                       </span>
-                      {extrasTotal > 0 && (
-                        <p className="text-xs text-amber-500 mt-0.5">
-                          ${customProduct.salePrice.toFixed(2)} + ${extrasTotal.toFixed(2)} extras
+                      {(extrasTotal > 0 || modifiersTotal > 0) && (
+                        <p className="text-xs text-slate-400 mt-0.5">
+                          ${customProduct.salePrice.toFixed(2)}
+                          {extrasTotal > 0 && <span className="text-amber-500"> + ${extrasTotal.toFixed(2)} extras</span>}
+                          {modifiersTotal > 0 && <span className="text-violet-500"> + ${modifiersTotal.toFixed(2)} variante</span>}
                         </p>
                       )}
                     </div>
                   </div>
                 )
               })()}
+              {modifierError && (
+                <p className="text-xs text-red-500 mb-2">{modifierError}</p>
+              )}
               <button
                 onClick={confirmCustomization}
                 className="w-full bg-violet-600 hover:bg-violet-700 text-white font-bold py-3 rounded-xl text-sm active:scale-95 transition-all"
