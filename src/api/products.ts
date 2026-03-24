@@ -22,3 +22,9 @@ export const updateProduct = (id: number, data: ProductRequest) =>
   client.put<Product>(`/api/products/${id}`, data).then((r) => r.data)
 export const deleteProduct = (id: number) =>
   client.delete(`/api/products/${id}`)
+export const getInactiveProducts = () =>
+  client.get<Product[]>('/api/products/inactive').then((r) => r.data)
+export const getAllProducts = () =>
+  client.get<Product[]>('/api/products/all').then((r) => r.data)
+export const reactivateProduct = (id: number) =>
+  client.post<Product>(`/api/products/${id}/reactivate`).then((r) => r.data)

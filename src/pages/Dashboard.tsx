@@ -6,9 +6,10 @@ import { getCarts } from '../api/carts'
 import { getPayrollDueToday } from '../api/payroll'
 import { getCancellationRequests } from '../api/cancellations'
 import { getShifts } from '../api/shifts'
+import { getRequisitions } from '../api/requisitions'
 import {
   AlertTriangle, TrendingUp, ShoppingBag, Warehouse,
-  Bell, DollarSign, XCircle, Clock, LayoutGrid,
+  Bell, DollarSign, XCircle, Clock, LayoutGrid, Truck,
 } from 'lucide-react'
 import { Link } from 'react-router-dom'
 
@@ -37,9 +38,12 @@ export default function Dashboard() {
   })
 
   // Global alerts — always shown regardless of filter
-  const { data: duePayroll = [] }     = useQuery({ queryKey: ['payroll-due'],    queryFn: getPayrollDueToday })
-  const { data: pendingCancels = [] } = useQuery({ queryKey: ['cancellation-requests', 'PENDING'], queryFn: () => getCancellationRequests('PENDING') })
-  const { data: pendingShifts = [] }  = useQuery({ queryKey: ['shifts', 'PENDING_APPROVAL'], queryFn: () => getShifts('PENDING_APPROVAL') })
+  const { data: duePayroll = [] }         = useQuery({ queryKey: ['payroll-due'],    queryFn: getPayrollDueToday })
+  const { data: pendingCancels = [] }     = useQuery({ queryKey: ['cancellation-requests', 'PENDING'], queryFn: () => getCancellationRequests('PENDING') })
+  const { data: pendingShifts = [] }      = useQuery({ queryKey: ['shifts', 'PENDING_APPROVAL'], queryFn: () => getShifts('PENDING_APPROVAL') })
+  const { data: pendingReqs = [] }        = useQuery({ queryKey: ['requisitions', 'SOLICITADA'],       queryFn: () => getRequisitions({ status: 'SOLICITADA' }),       refetchInterval: 60_000 })
+  const { data: approvedReqs = [] }       = useQuery({ queryKey: ['requisitions', 'APROBADA'],         queryFn: () => getRequisitions({ status: 'APROBADA' }),         refetchInterval: 60_000 })
+  const { data: discrepancyReqs = [] }    = useQuery({ queryKey: ['requisitions', 'CON_DISCREPANCIA'], queryFn: () => getRequisitions({ status: 'CON_DISCREPANCIA' }), refetchInterval: 60_000 })
 
   const todaySales = sales.filter((s) => {
     const d = new Date(s.soldAt)
@@ -81,6 +85,94 @@ export default function Dashboard() {
       </div>
 
       {/* Global alerts */}
+
+      {/* ── Requisiciones pendientes de aprobación (bloquean la operación) ── */}
+      {pendingReqs.length > 0 && (
+        <div className="bg-orange-50 border border-orange-300 rounded-xl p-4">
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2 text-orange-700 font-semibold">
+              <Truck size={18} className="shrink-0" />
+              <span>
+                {pendingReqs.length === 1
+                  ? '1 requisición esperando aprobación'
+                  : `${pendingReqs.length} requisiciones esperando aprobación`}
+              </span>
+            </div>
+            <Link to="/requisitions" className="text-xs text-orange-600 font-semibold underline shrink-0">
+              Aprobar →
+            </Link>
+          </div>
+          <ul className="mt-2 space-y-1">
+            {pendingReqs.map((r) => (
+              <li key={r.id} className="flex items-center justify-between text-sm text-orange-700">
+                <span>
+                  <span className="font-medium">{r.cartName}</span>
+                  {r.requestedByName && <span className="text-orange-500"> · {r.requestedByName}</span>}
+                </span>
+                <span className="text-xs text-orange-500">{r.items.length} insumo{r.items.length !== 1 ? 's' : ''}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {/* ── Requisiciones aprobadas pendientes de despacho ── */}
+      {approvedReqs.length > 0 && (
+        <div className="bg-green-50 border border-green-300 rounded-xl p-4">
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2 text-green-700 font-semibold">
+              <Truck size={18} className="shrink-0" />
+              <span>
+                {approvedReqs.length === 1
+                  ? '1 requisición lista para despachar'
+                  : `${approvedReqs.length} requisiciones listas para despachar`}
+              </span>
+            </div>
+            <Link to="/requisitions" className="text-xs text-green-600 font-semibold underline shrink-0">
+              Despachar →
+            </Link>
+          </div>
+          <ul className="mt-2 space-y-1">
+            {approvedReqs.map((r) => (
+              <li key={r.id} className="flex items-center justify-between text-sm text-green-700">
+                <span>
+                  <span className="font-medium">{r.cartName}</span>
+                  {r.requestedByName && <span className="text-green-500"> · {r.requestedByName}</span>}
+                </span>
+                <span className="text-xs text-green-500">{r.items.length} insumo{r.items.length !== 1 ? 's' : ''}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {/* ── Requisiciones con discrepancia sin resolver ── */}
+      {discrepancyReqs.length > 0 && (
+        <div className="bg-yellow-50 border border-yellow-300 rounded-xl p-4">
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2 text-yellow-700 font-semibold">
+              <AlertTriangle size={18} className="shrink-0" />
+              <span>
+                {discrepancyReqs.length === 1
+                  ? '1 requisición con discrepancia sin resolver'
+                  : `${discrepancyReqs.length} requisiciones con discrepancia`}
+              </span>
+            </div>
+            <Link to="/requisitions" className="text-xs text-yellow-600 font-semibold underline shrink-0">
+              Resolver →
+            </Link>
+          </div>
+          <ul className="mt-2 space-y-1">
+            {discrepancyReqs.map((r) => (
+              <li key={r.id} className="text-sm text-yellow-700">
+                <span className="font-medium">{r.cartName}</span>
+                {r.requestedByName && <span className="text-yellow-500"> · {r.requestedByName}</span>}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       {duePayroll.length > 0 && (
         <div className="bg-amber-50 border border-amber-300 rounded-xl p-4">
           <div className="flex items-center justify-between">

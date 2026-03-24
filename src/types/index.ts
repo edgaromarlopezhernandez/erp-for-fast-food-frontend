@@ -211,6 +211,33 @@ export interface PurchaseOrder {
   items: PurchaseOrderItemResponse[]
 }
 
+// ── Purchase Suggestions ──────────────────────────────────────────────────────
+export type SuggestionUrgency = 'CRITICAL' | 'LOW' | 'NORMAL' | 'NO_DATA'
+
+export interface PurchaseSuggestionItem {
+  inventoryItemId: number
+  name: string
+  unitType: string
+  currentCentralStock: number
+  minimumStock: number
+  totalConsumedAllCarts: number
+  avgDailyConsumption: number
+  estimatedDaysRemaining: number | null
+  minBasedQuantity: number
+  velocityBasedQuantity: number
+  suggestedQuantity: number
+  urgency: SuggestionUrgency
+  lastUnitCost: number | null
+  estimatedTotalCost: number | null
+}
+
+export interface PurchaseSuggestion {
+  windowDays: number
+  targetDays: number
+  generatedAt: string
+  items: PurchaseSuggestionItem[]
+}
+
 // ── Recipes ───────────────────────────────────────────────────────────────────
 export interface RecipeItemRequest { inventoryItemId: number; quantityRequired: number; canExclude?: boolean }
 export interface RecipeRequest { productId: number; items: RecipeItemRequest[] }
