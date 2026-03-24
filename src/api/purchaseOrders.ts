@@ -1,5 +1,5 @@
 import client from './client'
-import type { PurchaseOrder, PurchaseOrderRequest } from '../types'
+import type { PurchaseOrder, PurchaseOrderRequest, PurchaseSuggestion } from '../types'
 
 export const getPurchaseOrders = () =>
   client.get<PurchaseOrder[]>('/api/purchase-orders').then((r) => r.data)
@@ -15,3 +15,10 @@ export const confirmPurchaseOrder = (id: number) =>
 
 export const cancelPurchaseOrder = (id: number) =>
   client.post<PurchaseOrder>(`/api/purchase-orders/${id}/cancel`).then((r) => r.data)
+
+export const getPurchaseSuggestions = (windowDays = 30, targetDays = 30) =>
+  client
+    .get<PurchaseSuggestion>('/api/purchase-orders/suggestions', {
+      params: { windowDays, targetDays },
+    })
+    .then((r) => r.data)

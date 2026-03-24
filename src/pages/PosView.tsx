@@ -7,7 +7,7 @@ import { getAllRecipes } from '../api/recipes'
 import { getMe } from '../api/users'
 import { getMyCancellationRequests, requestCancellation } from '../api/cancellations'
 import { getMyShift, openShift, closeShift, getMyAttendance } from '../api/shifts'
-import { getRequisitionsByCart, receiveRequisition } from '../api/requisitions'
+import { getRequisitionsByCart, receiveRequisition, submitRecount } from '../api/requisitions'
 import { getModifierGroups } from '../api/modifiers'
 import type { RequisitionResponse } from '../api/requisitions'
 import type { Product, Sale, SaleItemRequest, SendTicketResponse, Recipe, RecipeExtra, ProductModifierGroup } from '../types'
@@ -15,7 +15,7 @@ import type { Product, Sale, SaleItemRequest, SendTicketResponse, Recipe, Recipe
 import {
   ShoppingCart, Trash2, CheckCircle, LogOut, Minus, Plus,
   Warehouse, ChevronDown, ChevronUp, XCircle, Clock, X, DollarSign, Lock, MessageCircle, Sparkles,
-  PackageCheck, Truck, ClipboardCheck,
+  PackageCheck, Truck, ClipboardCheck, AlertTriangle, RotateCcw,
 } from 'lucide-react'
 import { useAuth } from '../auth/AuthContext'
 import { useNavigate } from 'react-router-dom'
@@ -89,7 +89,8 @@ export default function PosView() {
   })
 
   const activeRequisition = cartRequisitions.find(r =>
-    r.status === 'SOLICITADA' || r.status === 'APROBADA' || r.status === 'EN_TRANSITO'
+    r.status === 'SOLICITADA' || r.status === 'APROBADA' ||
+    r.status === 'EN_TRANSITO' || r.status === 'RECONTEO_SOLICITADO'
   ) ?? null
 
   // Shift open form
@@ -97,6 +98,7 @@ export default function PosView() {
   const [declaredCash, setDeclaredCash] = useState('')
   const [shiftError, setShiftError] = useState('')
   const [showCloseShift, setShowCloseShift] = useState(false)
+  const [dismissedReturnAlert, setDismissedReturnAlert] = useState(false)
 
   const [cart, setCart] = useState<CartLine[]>([])
   const [success, setSuccess] = useState(false)
@@ -306,7 +308,8 @@ export default function PosView() {
   }
 
   const openReceiptModal = () => {
-    if (!activeRequisition || activeRequisition.status !== 'EN_TRANSITO') return
+    if (!activeRequisition) return
+    if (activeRequisition.status !== 'EN_TRANSITO' && activeRequisition.status !== 'RECONTEO_SOLICITADO') return
     const init: Record<number, string> = {}
     activeRequisition.items.forEach((item) => { init[item.id] = '' })
     setReceivedQtys(init)
@@ -321,6 +324,12 @@ export default function PosView() {
       const quantities: Record<number, number> = {}
       for (const [id, val] of Object.entries(receivedQtys)) {
         quantities[Number(id)] = Number(val) || 0
+      }
+      if (activeRequisition?.status === 'RECONTEO_SOLICITADO') {
+        return submitRecount(activeRequisition.id, {
+          recountQuantities: quantities,
+          recountNotes: receiptNotes.trim() || undefined,
+        })
       }
       return receiveRequisition(activeRequisition!.id, {
         receivedQuantities: quantities,
@@ -359,6 +368,49 @@ export default function PosView() {
         </p>
         <button onClick={handleLogout} className="mt-4 flex items-center gap-2 text-slate-500 hover:text-slate-300 text-sm">
           <LogOut size={16} /> Salir
+        </button>
+      </div>
+    )
+  }
+
+  // ── Pantalla: cierre devuelto por el admin ──────────────────────────────────
+  if (!shiftLoading && myShift?.status === 'OPEN' && myShift.adminNotes && myShift.reviewedAt && !dismissedReturnAlert) {
+    return (
+      <div className="min-h-screen bg-slate-900 flex flex-col items-center justify-center p-6 gap-4 text-center">
+        <div className="bg-red-500/10 border border-red-500/30 rounded-full p-4">
+          <AlertTriangle size={40} className="text-red-400" />
+        </div>
+        <div>
+          <h1 className="text-white text-2xl font-bold">Tu cierre fue devuelto</h1>
+          <p className="text-slate-400 text-sm mt-1">
+            El administrador revisó tu cierre y requiere que lo corrijas.
+          </p>
+        </div>
+        <div className="bg-slate-800 rounded-2xl p-5 w-full max-w-xs text-left space-y-3">
+          <div>
+            <p className="text-xs text-slate-500 font-medium uppercase tracking-wide mb-1">Nota del administrador</p>
+            <p className="text-amber-300 text-sm leading-relaxed">{myShift.adminNotes}</p>
+          </div>
+          {myShift.reviewedAt && (
+            <p className="text-xs text-slate-600">
+              Devuelto el{' '}
+              {new Date(myShift.reviewedAt).toLocaleDateString('es-MX', { weekday: 'short', day: 'numeric', month: 'short' })}
+              {' a las '}
+              {new Date(myShift.reviewedAt).toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' })}
+            </p>
+          )}
+        </div>
+        <button
+          onClick={() => { setDismissedReturnAlert(true); setDeclaredCash(''); setShiftError(''); setShowCloseShift(true) }}
+          className="w-full max-w-xs bg-amber-500 hover:bg-amber-600 text-white font-bold py-3 rounded-xl transition-colors"
+        >
+          Corregir cierre
+        </button>
+        <button
+          onClick={() => setDismissedReturnAlert(true)}
+          className="text-slate-600 hover:text-slate-400 text-sm"
+        >
+          Ir al POS primero
         </button>
       </div>
     )
@@ -487,6 +539,13 @@ export default function PosView() {
             </div>
             <p className="text-slate-400 text-xs">
               Turno abierto · Fondo: ${myShift?.startingCash?.toFixed(2) ?? '—'}
+              {myShift?.openedAt && (
+                <span className="ml-1 text-slate-500">
+                  · {new Date(myShift.openedAt).toLocaleDateString('es-MX', { weekday: 'short', day: 'numeric', month: 'short' })}
+                  {' '}
+                  {new Date(myShift.openedAt).toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' })}
+                </span>
+              )}
             </p>
           </div>
           <div className="flex items-center gap-2">
@@ -501,6 +560,20 @@ export default function PosView() {
             </button>
           </div>
         </div>
+
+        {/* Banner: cierre devuelto por el admin */}
+        {myShift?.adminNotes && myShift?.reviewedAt && dismissedReturnAlert && (
+          <button
+            onClick={() => { setDeclaredCash(''); setShiftError(''); setShowCloseShift(true) }}
+            className="w-full flex items-center gap-2 bg-red-500/10 border border-red-500/30 hover:bg-red-500/15 rounded-lg px-3 py-2 mb-1 text-left transition-colors"
+          >
+            <AlertTriangle size={14} className="text-red-400 shrink-0" />
+            <span className="text-xs text-red-300 leading-snug flex-1">
+              <span className="font-semibold">Cierre devuelto:</span> {myShift.adminNotes}
+            </span>
+            <span className="text-xs text-red-400 font-medium whitespace-nowrap">Corregir →</span>
+          </button>
+        )}
 
         <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
           {products.map((product, i) => {
@@ -771,6 +844,65 @@ export default function PosView() {
                   >
                     <ClipboardCheck size={13} />
                     Registrar recepción (conteo ciego)
+                  </button>
+                </div>
+              </div>
+            ) : activeRequisition.status === 'RECONTEO_SOLICITADO' ? (
+              <div className="px-4 py-3">
+                <div className="bg-yellow-500/10 border border-yellow-500/30 rounded-xl p-3 space-y-3">
+
+                  {/* Título */}
+                  <div className="flex items-center gap-2">
+                    <RotateCcw size={14} className="text-yellow-400 shrink-0" />
+                    <span className="text-yellow-300 text-xs font-semibold uppercase tracking-wide">
+                      Reconteo solicitado
+                    </span>
+                  </div>
+
+                  <p className="text-slate-400 text-xs">
+                    El administrador detectó diferencias en tu último conteo y solicita que vuelvas a contar la mercancía físicamente.
+                  </p>
+
+                  {/* Mensaje del admin */}
+                  {activeRequisition.recountNotes && (
+                    <div className="bg-yellow-500/15 border border-yellow-500/20 rounded-lg px-2.5 py-2">
+                      <p className="text-yellow-400 text-xs font-medium mb-0.5">Mensaje del administrador:</p>
+                      <p className="text-yellow-100/80 text-xs italic">"{activeRequisition.recountNotes}"</p>
+                    </div>
+                  )}
+
+                  {/* Ítems con discrepancia del conteo anterior */}
+                  {activeRequisition.items.some((i) => i.discrepancy != null && i.discrepancy !== 0) && (
+                    <div className="space-y-1">
+                      <p className="text-xs text-slate-500 font-medium">Diferencias encontradas en tu primer conteo:</p>
+                      {activeRequisition.items
+                        .filter((i) => i.discrepancy != null && i.discrepancy !== 0)
+                        .map((item) => (
+                          <div key={item.id} className="flex justify-between items-center text-xs py-0.5">
+                            <span className="text-slate-400 truncate">{item.inventoryItemName}</span>
+                            <span className="text-red-400 font-semibold shrink-0 ml-2">
+                              {item.discrepancy! > 0 ? `-${item.discrepancy}` : `+${Math.abs(item.discrepancy!)}`} {item.unitType === 'PIECE' ? 'pza' : item.unitType === 'GRAM' ? 'g' : 'ml'}
+                            </span>
+                          </div>
+                        ))
+                      }
+                    </div>
+                  )}
+
+                  {/* Advertencia de consecuencias */}
+                  <div className="flex items-start gap-2 bg-orange-500/10 border border-orange-500/20 rounded-lg px-2.5 py-2">
+                    <AlertTriangle size={12} className="text-orange-400 shrink-0 mt-0.5" />
+                    <p className="text-orange-300/80 text-xs">
+                      <strong className="text-orange-300">Cuenta con cuidado.</strong> Si reportas que todo está completo pero hay faltantes, el descuento recaerá sobre ti. Si reportas honestamente lo que tienes, el faltante se le descontará al administrador.
+                    </p>
+                  </div>
+
+                  <button
+                    onClick={openReceiptModal}
+                    className="w-full bg-yellow-600 hover:bg-yellow-700 text-white text-xs font-semibold py-2 rounded-lg flex items-center justify-center gap-1.5 transition-colors"
+                  >
+                    <ClipboardCheck size={13} />
+                    Hacer reconteo ciego
                   </button>
                 </div>
               </div>
@@ -1126,8 +1258,18 @@ export default function PosView() {
               </div>
               <button onClick={() => setShowCloseShift(false)}><X size={20} className="text-slate-400" /></button>
             </div>
-            <div className="bg-slate-50 rounded-lg px-3 py-2 mb-4 text-sm">
+            <div className="bg-slate-50 rounded-lg px-3 py-2 mb-3 text-sm">
               <p className="text-xs text-slate-500 font-medium mb-1.5">Resumen del turno</p>
+              {myShift?.openedAt && (
+                <div className="flex justify-between text-slate-700 mb-1">
+                  <span>Fecha de apertura</span>
+                  <span className="font-medium">
+                    {new Date(myShift.openedAt).toLocaleDateString('es-MX', { weekday: 'long', day: 'numeric', month: 'long' })}
+                    {' · '}
+                    {new Date(myShift.openedAt).toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' })}
+                  </span>
+                </div>
+              )}
               <div className="flex justify-between text-slate-700">
                 <span>Fondo inicial</span>
                 <span className="font-medium">${myShift?.startingCash?.toFixed(2) ?? '—'}</span>
@@ -1136,6 +1278,12 @@ export default function PosView() {
                 <span>Ventas completadas</span>
                 <span className="font-medium">{mySales.filter(s => s.status === 'COMPLETED').length}</span>
               </div>
+            </div>
+            <div className="flex items-start gap-2 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-4">
+              <AlertTriangle size={15} className="text-amber-500 mt-0.5 shrink-0" />
+              <p className="text-xs text-amber-700 leading-snug">
+                Una vez cerrado, el turno <span className="font-semibold">no puede reabrirse</span> sin intervención del administrador.
+              </p>
             </div>
             <div className="mb-4">
               <label className="text-sm font-medium text-slate-700 block mb-1">
@@ -1170,18 +1318,24 @@ export default function PosView() {
         </div>
       )}
 
-      {/* ── Modal recepción ciega de resurtido ───────────────────────────────── */}
-      {showReceiptModal && activeRequisition?.status === 'EN_TRANSITO' && (
+      {/* ── Modal recepción ciega / reconteo de resurtido ────────────────────── */}
+      {showReceiptModal && (activeRequisition?.status === 'EN_TRANSITO' || activeRequisition?.status === 'RECONTEO_SOLICITADO') && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70">
           <div className="bg-white rounded-2xl w-full max-w-md shadow-xl flex flex-col max-h-[90vh]">
 
             {/* Header */}
             <div className="flex items-center justify-between px-5 pt-5 pb-3 border-b border-slate-100">
               <div className="flex items-center gap-2">
-                <ClipboardCheck size={18} className="text-emerald-600" />
+                <ClipboardCheck size={18} className={activeRequisition.status === 'RECONTEO_SOLICITADO' ? 'text-yellow-600' : 'text-emerald-600'} />
                 <div>
-                  <h3 className="font-bold text-slate-800">Conteo de recepción</h3>
-                  <p className="text-xs text-slate-400">Cuenta físicamente cada ítem e ingresa lo que recibiste</p>
+                  <h3 className="font-bold text-slate-800">
+                    {activeRequisition.status === 'RECONTEO_SOLICITADO' ? 'Reconteo de recepción' : 'Conteo de recepción'}
+                  </h3>
+                  <p className="text-xs text-slate-400">
+                    {activeRequisition.status === 'RECONTEO_SOLICITADO'
+                      ? 'Segundo conteo solicitado por el administrador'
+                      : 'Cuenta físicamente cada ítem e ingresa lo que recibiste'}
+                  </p>
                 </div>
               </div>
               <button onClick={() => setShowReceiptModal(false)}>
@@ -1192,18 +1346,36 @@ export default function PosView() {
             {receiptDone ? (
               <div className="flex flex-col items-center justify-center py-10 gap-3">
                 <CheckCircle size={40} className="text-emerald-500" />
-                <p className="font-semibold text-slate-700">¡Recepción registrada!</p>
+                <p className="font-semibold text-slate-700">
+                  {activeRequisition.status === 'RECONTEO_SOLICITADO' ? '¡Reconteo registrado!' : '¡Recepción registrada!'}
+                </p>
                 <p className="text-xs text-slate-400 text-center px-6">
-                  El sistema comparará lo que recibiste con lo que fue despachado.
+                  El sistema comparará lo que contaste con lo que fue despachado.
                 </p>
               </div>
             ) : (
               <>
-                {/* Nota del despachador */}
-                {activeRequisition.dispatchNotes && (
+                {/* Nota del reconteo o del despachador */}
+                {activeRequisition.status === 'RECONTEO_SOLICITADO' && activeRequisition.recountNotes && (
+                  <div className="mx-5 mt-4 bg-yellow-50 border border-yellow-200 rounded-lg px-3 py-2">
+                    <p className="text-xs text-yellow-700 font-medium">Mensaje del administrador:</p>
+                    <p className="text-sm text-yellow-900 mt-0.5">{activeRequisition.recountNotes}</p>
+                  </div>
+                )}
+                {activeRequisition.status === 'EN_TRANSITO' && activeRequisition.dispatchNotes && (
                   <div className="mx-5 mt-4 bg-blue-50 border border-blue-200 rounded-lg px-3 py-2">
                     <p className="text-xs text-blue-600 font-medium">Nota del despachador:</p>
                     <p className="text-sm text-blue-800 mt-0.5">{activeRequisition.dispatchNotes}</p>
+                  </div>
+                )}
+
+                {/* Advertencia de consecuencias — solo en reconteo */}
+                {activeRequisition.status === 'RECONTEO_SOLICITADO' && (
+                  <div className="mx-5 mt-3 flex items-start gap-2 bg-orange-50 border border-orange-200 rounded-lg px-3 py-2.5">
+                    <AlertTriangle size={14} className="text-orange-500 shrink-0 mt-0.5" />
+                    <p className="text-orange-800 text-xs">
+                      <strong>Este es tu conteo final — sé exacto.</strong> Si indicas que todo está completo pero hay faltantes, el descuento será tu responsabilidad. Si reportas honestamente las piezas que tienes, el faltante se le descontará al administrador.
+                    </p>
                   </div>
                 )}
 
@@ -1254,9 +1426,17 @@ export default function PosView() {
                   <button
                     onClick={() => receiveMut.mutate()}
                     disabled={receiveMut.isPending}
-                    className="flex-1 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-sm font-semibold py-2 rounded-lg"
+                    className={`flex-1 disabled:opacity-50 text-white text-sm font-semibold py-2 rounded-lg ${
+                      activeRequisition?.status === 'RECONTEO_SOLICITADO'
+                        ? 'bg-yellow-600 hover:bg-yellow-700'
+                        : 'bg-emerald-600 hover:bg-emerald-700'
+                    }`}
                   >
-                    {receiveMut.isPending ? 'Registrando...' : 'Confirmar recepción'}
+                    {receiveMut.isPending
+                      ? 'Registrando...'
+                      : activeRequisition?.status === 'RECONTEO_SOLICITADO'
+                        ? 'Confirmar reconteo'
+                        : 'Confirmar recepción'}
                   </button>
                 </div>
               </>

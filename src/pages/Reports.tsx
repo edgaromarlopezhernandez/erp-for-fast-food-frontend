@@ -53,10 +53,11 @@ export default function Reports() {
     queryFn: () => getFinancialReport(year, month, cartId),
   })
 
-  const { data: profitability = [], isLoading: loadingProfitability } = useQuery({
+  const { data: profitability = [], isLoading: loadingProfitability, isError: profitabilityError, error: profitabilityErrorObj } = useQuery({
     queryKey: ['product-profitability'],
     queryFn: getProductProfitability,
     enabled: tab === 'products',
+    retry: 1,
   })
 
   const [expandedProduct, setExpandedProduct] = useState<number | null>(null)
@@ -364,7 +365,19 @@ export default function Reports() {
 
           {loadingProfitability && <p className="text-slate-400 text-sm">Calculando rentabilidad...</p>}
 
-          {!loadingProfitability && profitability.length === 0 && (
+          {profitabilityError && (
+            <div className="bg-red-50 border border-red-200 rounded-xl px-4 py-3 text-sm text-red-700 flex items-start gap-2">
+              <AlertTriangle size={15} className="shrink-0 mt-0.5" />
+              <div>
+                <p className="font-medium">Error al cargar el reporte de rentabilidad.</p>
+                <p className="text-xs text-red-500 mt-0.5">
+                  {(profitabilityErrorObj as any)?.response?.data?.message ?? (profitabilityErrorObj as any)?.message ?? 'Error interno del servidor'}
+                </p>
+              </div>
+            </div>
+          )}
+
+          {!loadingProfitability && !profitabilityError && profitability.length === 0 && (
             <div className="text-center py-16 text-slate-400 text-sm">
               No hay productos activos configurados.
             </div>

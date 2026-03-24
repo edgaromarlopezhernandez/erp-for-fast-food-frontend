@@ -39,6 +39,7 @@ export default function Recipes() {
   const [editingGroup, setEditingGroup] = useState<ProductModifierGroup | null>(null)
   const [groupForm, setGroupForm] = useState<GroupForm>(EMPTY_GROUP)
   const [groupError, setGroupError] = useState('')
+  const [openComboIdx, setOpenComboIdx] = useState(-1)
 
   const qc = useQueryClient()
 
@@ -202,6 +203,7 @@ export default function Recipes() {
     setEditingGroup(null)
     setGroupForm(EMPTY_GROUP)
     setGroupError('')
+    setOpenComboIdx(-1)
     setShowGroupModal(true)
   }
 
@@ -228,6 +230,20 @@ export default function Recipes() {
     if (groupForm.modifiers.length === 0) { setGroupError('Agrega al menos una opción'); return }
     if (groupForm.modifiers.some(m => !m.name.trim())) { setGroupError('Todas las opciones deben tener nombre'); return }
     saveGroupMut.mutate()
+  }
+
+  const selectInventoryForModifier = (mi: number, inv: InventoryItem) => {
+    setGroupForm(f => ({
+      ...f,
+      modifiers: f.modifiers.map((m, i) => {
+        if (i !== mi) return m
+        const recipeItems = m.recipeItems.length === 0
+          ? [{ inventoryItemId: inv.id, quantityRequired: '1' }]
+          : m.recipeItems
+        return { ...m, name: inv.name, recipeItems }
+      }),
+    }))
+    setOpenComboIdx(-1)
   }
 
   const updateModifier = (mi: number, key: keyof ModifierForm, val: string) =>
@@ -540,7 +556,7 @@ export default function Recipes() {
       {/* ── Modal: crear / editar grupo de modificadores ─────────────────── */}
       {showGroupModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50">
-          <div className="bg-white rounded-2xl w-full max-w-lg shadow-xl flex flex-col max-h-[90vh]">
+          <div className="bg-white rounded-2xl w-full max-w-lg shadow-xl flex flex-col max-h-[96vh] h-[96vh]">
             <div className="flex items-center justify-between px-5 pt-5 pb-3 border-b border-slate-100">
               <div>
                 <h3 className="font-bold text-slate-800">{editingGroup ? 'Editar grupo' : 'Nuevo grupo de modificadores'}</h3>
@@ -586,25 +602,83 @@ export default function Recipes() {
                   <p className="text-xs font-semibold text-slate-600 uppercase tracking-wide">Opciones</p>
                   <button
                     onClick={() => setGroupForm(f => ({ ...f, modifiers: [...f.modifiers, { ...EMPTY_MODIFIER }] }))}
-                    className="flex items-center gap-1 text-xs bg-violet-50 hover:bg-violet-100 text-violet-600 font-medium px-2 py-1 rounded-lg"
+                    className="flex items-center gap-1.5 text-sm bg-violet-50 active:bg-violet-100 text-violet-600 font-medium px-3 py-2 rounded-lg"
                   >
-                    <Plus size={11} /> Opción
+                    <Plus size={14} /> Opción
                   </button>
                 </div>
 
                 <div className="space-y-3">
                   {groupForm.modifiers.map((mod, mi) => (
-                    <div key={mi} className="border border-slate-200 rounded-xl p-3 bg-slate-50 space-y-2">
-                      <div className="flex items-center gap-2">
-                        <input
-                          type="text"
-                          placeholder={`Opción ${mi + 1} ej: Hervido`}
-                          value={mod.name}
-                          onChange={e => updateModifier(mi, 'name', e.target.value)}
-                          className="flex-1 border border-slate-300 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:border-violet-500"
-                        />
-                        <div className="flex items-center gap-1 w-28">
-                          <span className="text-xs text-slate-400">+$</span>
+                    <div key={mi} className="border border-slate-200 rounded-xl overflow-hidden bg-white">
+
+                      {/* ── Cabecera: label opción + botón eliminar ── */}
+                      <div className="flex items-center justify-between px-3 pt-3 pb-1">
+                        <span className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Opción {mi + 1}</span>
+                        {groupForm.modifiers.length > 1 && (
+                          <button onClick={() => removeModifier(mi)} className="text-slate-300 active:text-red-500 p-1 -mr-1">
+                            <X size={16} />
+                          </button>
+                        )}
+                      </div>
+
+                      {/* ── Nombre (combobox o chip) ── */}
+                      <div className="px-3 pb-2">
+                        {mod.name === '' ? (
+                          <>
+                            <input
+                              type="text"
+                              autoFocus={mi === groupForm.modifiers.length - 1}
+                              placeholder="Escribe o elige un insumo"
+                              value={mod.name}
+                              onChange={e => { updateModifier(mi, 'name', e.target.value); setOpenComboIdx(mi) }}
+                              onFocus={() => setOpenComboIdx(mi)}
+                              onBlur={() => setTimeout(() => setOpenComboIdx(-1), 150)}
+                              className="w-full border border-slate-300 rounded-xl px-3 py-3 text-base focus:outline-none focus:border-violet-500"
+                            />
+                            {openComboIdx === mi && (() => {
+                              const filtered = (inventory as InventoryItem[]).filter(inv =>
+                                !mod.name || inv.name.toLowerCase().includes(mod.name.toLowerCase())
+                              )
+                              return (
+                                <div className="mt-1 border border-slate-200 rounded-xl overflow-hidden">
+                                  {filtered.length > 0 ? filtered.map(inv => (
+                                    <button
+                                      key={inv.id}
+                                      type="button"
+                                      onMouseDown={() => selectInventoryForModifier(mi, inv)}
+                                      className="w-full text-left px-4 py-3 text-base active:bg-violet-50 flex items-center justify-between gap-3 border-b border-slate-100 last:border-0 bg-white"
+                                    >
+                                      <span className="font-medium text-slate-700">{inv.name}</span>
+                                      <span className="text-sm text-slate-400 shrink-0">{unitLabel(inv.id)}</span>
+                                    </button>
+                                  )) : (
+                                    <p className="px-4 py-3 text-sm text-slate-400 bg-white">Sin coincidencias — se guardará como opción libre</p>
+                                  )}
+                                </div>
+                              )
+                            })()}
+                          </>
+                        ) : (
+                          <div className="flex items-center gap-2 bg-violet-50 border border-violet-200 rounded-xl px-3 py-2.5">
+                            <span className="text-base font-semibold text-violet-800 flex-1">{mod.name}</span>
+                            <button
+                              type="button"
+                              onClick={() => { updateModifier(mi, 'name', ''); setOpenComboIdx(mi) }}
+                              className="text-violet-400 active:text-violet-700 p-1 shrink-0"
+                              title="Cambiar"
+                            >
+                              <X size={15} />
+                            </button>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* ── Precio adicional ── */}
+                      <div className="px-3 pb-2 flex items-center gap-2">
+                        <span className="text-sm text-slate-500 shrink-0">Precio adicional</span>
+                        <div className="flex items-center gap-1 flex-1">
+                          <span className="text-sm text-slate-400">+$</span>
                           <input
                             type="number"
                             min={0}
@@ -612,24 +686,20 @@ export default function Recipes() {
                             placeholder="0.00"
                             value={mod.priceAdjustment}
                             onChange={e => updateModifier(mi, 'priceAdjustment', e.target.value)}
-                            className="w-full border border-slate-300 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:border-violet-500"
+                            className="flex-1 border border-slate-300 rounded-xl px-3 py-2.5 text-base focus:outline-none focus:border-violet-500"
                           />
                         </div>
-                        {groupForm.modifiers.length > 1 && (
-                          <button onClick={() => removeModifier(mi)} className="text-slate-400 hover:text-red-500 shrink-0">
-                            <X size={15} />
-                          </button>
-                        )}
                       </div>
 
-                      {/* Recipe items del modificador */}
-                      <div className="pl-1 space-y-1.5">
+                      {/* ── Insumos a descontar ── */}
+                      <div className="border-t border-slate-100 bg-slate-50 px-3 py-2 space-y-2">
+                        <p className="text-xs text-slate-400 font-semibold uppercase tracking-wide pt-1">Insumos a descontar</p>
                         {mod.recipeItems.map((ri, rii) => (
                           <div key={rii} className="flex items-center gap-2">
                             <select
                               value={ri.inventoryItemId || ''}
                               onChange={e => updateModifierRecipeItem(mi, rii, 'inventoryItemId', parseInt(e.target.value))}
-                              className="flex-1 border border-slate-200 rounded-lg px-2 py-1 text-xs focus:outline-none focus:border-violet-400"
+                              className="flex-1 border border-slate-200 rounded-lg px-2 py-2.5 text-sm focus:outline-none focus:border-violet-400 bg-white"
                             >
                               <option value="">Insumo</option>
                               {(inventory as InventoryItem[]).map(inv => (
@@ -642,21 +712,22 @@ export default function Recipes() {
                               placeholder="Cant."
                               value={ri.quantityRequired}
                               onChange={e => updateModifierRecipeItem(mi, rii, 'quantityRequired', e.target.value)}
-                              className="w-20 border border-slate-200 rounded-lg px-2 py-1 text-xs focus:outline-none focus:border-violet-400"
+                              className="w-20 border border-slate-200 rounded-lg px-2 py-2.5 text-sm focus:outline-none focus:border-violet-400 bg-white"
                             />
                             <span className="text-xs text-slate-400 w-6 shrink-0">{unitLabel(ri.inventoryItemId)}</span>
-                            <button onClick={() => removeModifierRecipeItem(mi, rii)} className="text-slate-300 hover:text-red-400 shrink-0">
-                              <X size={13} />
+                            <button onClick={() => removeModifierRecipeItem(mi, rii)} className="text-slate-300 active:text-red-400 p-1 shrink-0">
+                              <X size={15} />
                             </button>
                           </div>
                         ))}
                         <button
                           onClick={() => addModifierRecipeItem(mi)}
-                          className="flex items-center gap-1 text-xs text-slate-500 hover:text-violet-600 font-medium"
+                          className="flex items-center gap-1.5 text-sm text-slate-500 active:text-violet-600 font-medium py-2"
                         >
-                          <Plus size={11} /> Insumo a descontar
+                          <Plus size={14} /> Agregar insumo
                         </button>
                       </div>
+
                     </div>
                   ))}
                 </div>
