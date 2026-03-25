@@ -7,6 +7,8 @@ import { getAllRecipes } from '../api/recipes'
 import { getMe } from '../api/users'
 import { getMyCancellationRequests, requestCancellation } from '../api/cancellations'
 import { getMyShift, openShift, closeShift, getMyAttendance } from '../api/shifts'
+import { getClosingCountItems, saveClosingCount } from '../api/shiftCounts'
+import type { ShiftCountItem, ShiftCountEntry } from '../types'
 import { getRequisitionsByCart, receiveRequisition, submitRecount } from '../api/requisitions'
 import { getModifierGroups } from '../api/modifiers'
 import type { RequisitionResponse } from '../api/requisitions'
@@ -97,7 +99,13 @@ export default function PosView() {
   const [startingCash, setStartingCash] = useState('')
   const [declaredCash, setDeclaredCash] = useState('')
   const [shiftError, setShiftError] = useState('')
-  const [showCloseShift, setShowCloseShift] = useState(false)
+  const [showCloseShift, setShowCloseShift]       = useState(false)
+  const [showInventoryCount, setShowInventoryCount] = useState(false)
+  const [countItems, setCountItems]                 = useState<ShiftCountItem[]>([])
+  const [countValues, setCountValues]               = useState<Record<number, string>>({})
+  const [countNotes, setCountNotes]                 = useState<Record<number, string>>({})
+  const [countError, setCountError]                 = useState('')
+  const [countSaving, setCountSaving]               = useState(false)
   const [dismissedReturnAlert, setDismissedReturnAlert] = useState(false)
 
   const [cart, setCart] = useState<CartLine[]>([])
@@ -291,6 +299,51 @@ export default function PosView() {
     },
   })
 
+  // Antes de mostrar el cierre de turno, verificar si hay items que contar
+  const handleInitClose = async () => {
+    setDeclaredCash(''); setShiftError('')
+    if (!myShift) return
+    try {
+      const items = await getClosingCountItems(myShift.id)
+      const pending = items.filter(i => !i.closingDone)
+      if (pending.length > 0) {
+        const initVals: Record<number, string> = {}
+        pending.forEach(i => { initVals[i.inventoryItemId] = '' })
+        setCountItems(pending)
+        setCountValues(initVals)
+        setCountNotes({})
+        setCountError('')
+        setShowInventoryCount(true)
+      } else {
+        setShowCloseShift(true)
+      }
+    } catch {
+      setShowCloseShift(true) // si falla el fetch, dejar pasar (el backend bloqueará si es necesario)
+    }
+  }
+
+  const handleSaveCount = async () => {
+    if (!myShift) return
+    const entries: ShiftCountEntry[] = countItems.map(item => ({
+      inventoryItemId: item.inventoryItemId,
+      declaredQuantity: Number(countValues[item.inventoryItemId] ?? 0),
+      notes: countNotes[item.inventoryItemId] || undefined,
+    }))
+    const hasEmpty = entries.some(e => countValues[e.inventoryItemId] === '')
+    if (hasEmpty) { setCountError('Ingresa la cantidad para todos los artículos'); return }
+    setCountSaving(true); setCountError('')
+    try {
+      await saveClosingCount(myShift.id, entries)
+      setShowInventoryCount(false)
+      setShowCloseShift(true)
+    } catch (err: unknown) {
+      const msg = (err as { response?: { data?: { message?: string } } })?.response?.data?.message
+      setCountError(msg || 'Error al guardar el conteo')
+    } finally {
+      setCountSaving(false)
+    }
+  }
+
   const cancelReqMut = useMutation({
     mutationFn: () => requestCancellation({ saleId: cancelTarget!.id, reason: cancelReason }),
     onSuccess: () => {
@@ -401,7 +454,7 @@ export default function PosView() {
           )}
         </div>
         <button
-          onClick={() => { setDismissedReturnAlert(true); setDeclaredCash(''); setShiftError(''); setShowCloseShift(true) }}
+          onClick={() => { setDismissedReturnAlert(true); handleInitClose() }}
           className="w-full max-w-xs bg-amber-500 hover:bg-amber-600 text-white font-bold py-3 rounded-xl transition-colors"
         >
           Corregir cierre
@@ -550,7 +603,7 @@ export default function PosView() {
           </div>
           <div className="flex items-center gap-2">
             <button
-              onClick={() => { setDeclaredCash(''); setShiftError(''); setShowCloseShift(true) }}
+              onClick={() => handleInitClose()}
               className="text-xs text-amber-400 hover:text-amber-300 border border-amber-400/30 hover:border-amber-400/60 px-2.5 py-1.5 rounded-lg transition-colors"
             >
               Cerrar turno
@@ -564,7 +617,7 @@ export default function PosView() {
         {/* Banner: cierre devuelto por el admin */}
         {myShift?.adminNotes && myShift?.reviewedAt && dismissedReturnAlert && (
           <button
-            onClick={() => { setDeclaredCash(''); setShiftError(''); setShowCloseShift(true) }}
+            onClick={() => handleInitClose()}
             className="w-full flex items-center gap-2 bg-red-500/10 border border-red-500/30 hover:bg-red-500/15 rounded-lg px-3 py-2 mb-1 text-left transition-colors"
           >
             <AlertTriangle size={14} className="text-red-400 shrink-0" />
@@ -1247,6 +1300,128 @@ export default function PosView() {
         </div>
       )}
 
+      {/* ── Modal conteo de inventario de cierre ─────────────────────────────── */}
+      {showInventoryCount && (
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4 bg-black/70">
+          <div className="bg-white rounded-t-2xl sm:rounded-2xl w-full sm:max-w-md shadow-xl flex flex-col max-h-[92dvh]">
+            {/* Header */}
+            <div className="flex items-center justify-between px-5 pt-5 pb-3 border-b border-slate-100 shrink-0">
+              <div className="flex items-center gap-2">
+                <ClipboardCheck size={18} className="text-blue-500" />
+                <div>
+                  <h3 className="font-bold text-slate-800">Conteo de inventario</h3>
+                  <p className="text-xs text-slate-400">Ingresa la cantidad física de cada artículo</p>
+                </div>
+              </div>
+              <button onClick={() => setShowInventoryCount(false)}><X size={20} className="text-slate-400" /></button>
+            </div>
+
+            {/* Items */}
+            <div className="overflow-y-auto flex-1 px-5 py-3 space-y-4">
+              {countItems.map(item => {
+                const unitSuffix = item.unitType === 'GRAM' ? 'g' : item.unitType === 'MILLILITER' ? 'ml' : 'pza'
+                return (
+                  <div key={item.inventoryItemId} className="border border-slate-200 rounded-xl p-4">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="font-semibold text-slate-800 text-sm">{item.name}</span>
+                      <span className="text-xs text-slate-400 bg-slate-100 px-2 py-0.5 rounded-full">{unitSuffix}</span>
+                    </div>
+
+                    {/* Helper de recipiente */}
+                    {item.containerSize && item.containerLabel && (item.unitType === 'GRAM' || item.unitType === 'MILLILITER') && (
+                      <div className="bg-blue-50 rounded-lg px-3 py-2 mb-3">
+                        <p className="text-xs text-blue-600 font-medium mb-1.5">
+                          Ayuda de conteo — {item.containerLabel} de {item.containerSize.toLocaleString('es-MX')}{unitSuffix}
+                        </p>
+                        <div className="flex items-center gap-2">
+                          <div className="flex-1">
+                            <label className="text-xs text-blue-500 block mb-0.5">{item.containerLabel}s llenos</label>
+                            <input
+                              type="number" min={0} step={1} placeholder="0"
+                              className="w-full border border-blue-200 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:border-blue-400"
+                              onChange={e => {
+                                const full = Number(e.target.value) || 0
+                                const partial = Number((document.getElementById(`partial-${item.inventoryItemId}`) as HTMLInputElement)?.value) || 0
+                                setCountValues(v => ({ ...v, [item.inventoryItemId]: String(full * item.containerSize! + partial) }))
+                              }}
+                            />
+                          </div>
+                          <span className="text-slate-400 text-sm mt-4">+</span>
+                          <div className="flex-1">
+                            <label className="text-xs text-blue-500 block mb-0.5">{unitSuffix} adicionales</label>
+                            <input
+                              id={`partial-${item.inventoryItemId}`}
+                              type="number" min={0} step={1} placeholder="0"
+                              className="w-full border border-blue-200 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:border-blue-400"
+                              onChange={e => {
+                                const partial = Number(e.target.value) || 0
+                                const fullInput = (document.querySelector(`[data-full-id="${item.inventoryItemId}"]`) as HTMLInputElement)
+                                const full = fullInput ? Number(fullInput.value) || 0 : 0
+                                setCountValues(v => ({ ...v, [item.inventoryItemId]: String(full * item.containerSize! + partial) }))
+                              }}
+                            />
+                          </div>
+                        </div>
+                        {countValues[item.inventoryItemId] !== '' && (
+                          <p className="text-xs text-blue-700 font-semibold mt-1.5">
+                            Total: {Number(countValues[item.inventoryItemId]).toLocaleString('es-MX')} {unitSuffix}
+                          </p>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Entrada directa */}
+                    <div>
+                      <label className="text-xs text-slate-500 block mb-1">
+                        {item.containerSize ? `Total en ${unitSuffix} (calculado arriba o ingresa directo)` : `Cantidad en ${unitSuffix}`}
+                      </label>
+                      <input
+                        type="number" min={0} step={0.001}
+                        placeholder={`0 ${unitSuffix}`}
+                        value={countValues[item.inventoryItemId] ?? ''}
+                        onChange={e => setCountValues(v => ({ ...v, [item.inventoryItemId]: e.target.value }))}
+                        className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-500"
+                      />
+                    </div>
+
+                    {/* Nota opcional */}
+                    <input
+                      type="text" placeholder="Nota opcional (ej: recipiente dañado)"
+                      value={countNotes[item.inventoryItemId] ?? ''}
+                      onChange={e => setCountNotes(n => ({ ...n, [item.inventoryItemId]: e.target.value }))}
+                      className="mt-2 w-full border border-slate-200 rounded-lg px-3 py-1.5 text-xs text-slate-600 focus:outline-none focus:border-slate-400 placeholder:text-slate-300"
+                    />
+                  </div>
+                )
+              })}
+            </div>
+
+            {/* Footer */}
+            <div className="px-5 pb-5 pt-3 border-t border-slate-100 shrink-0">
+              {countError && (
+                <div className="flex items-center gap-2 bg-red-50 border border-red-200 rounded-lg px-3 py-2 mb-3 text-xs text-red-700">
+                  <AlertTriangle size={13} className="shrink-0" />
+                  {countError}
+                </div>
+              )}
+              <div className="flex gap-3">
+                <button onClick={() => setShowInventoryCount(false)}
+                  className="flex-1 border border-slate-300 text-slate-700 text-sm py-2.5 rounded-xl hover:bg-slate-50">
+                  Cancelar
+                </button>
+                <button
+                  onClick={handleSaveCount}
+                  disabled={countSaving}
+                  className="flex-1 bg-blue-500 hover:bg-blue-600 disabled:opacity-50 text-white text-sm font-semibold py-2.5 rounded-xl"
+                >
+                  {countSaving ? 'Guardando...' : 'Confirmar conteo →'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* ── Modal cierre de turno ────────────────────────────────────────────── */}
       {showCloseShift && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70">
@@ -1278,6 +1453,18 @@ export default function PosView() {
                 <span>Ventas completadas</span>
                 <span className="font-medium">{mySales.filter(s => s.status === 'COMPLETED').length}</span>
               </div>
+              {(() => {
+                const salesTotal = mySales
+                  .filter(s => s.status === 'COMPLETED')
+                  .reduce((sum, s) => sum + s.totalAmount, 0)
+                const expectedTotal = (myShift?.startingCash ?? 0) + salesTotal
+                return (
+                  <div className="flex justify-between text-slate-700 mt-1 pt-1 border-t border-slate-200">
+                    <span className="font-semibold">Total esperado en caja</span>
+                    <span className="font-bold text-violet-700">${expectedTotal.toFixed(2)}</span>
+                  </div>
+                )
+              })()}
             </div>
             <div className="flex items-start gap-2 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-4">
               <AlertTriangle size={15} className="text-amber-500 mt-0.5 shrink-0" />

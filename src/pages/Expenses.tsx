@@ -5,7 +5,8 @@ import {
   type ExpenseResponse, type ExpenseRequest,
 } from '../api/expenses'
 import { getCarts } from '../api/carts'
-import { TrendingDown, Plus, Pencil, Trash2, ChevronLeft, ChevronRight, X, Warehouse } from 'lucide-react'
+import { getTenantProfile } from '../api/tenant'
+import { TrendingDown, Plus, Pencil, Trash2, X, Warehouse } from 'lucide-react'
 
 const fmt = (n: number) => n.toLocaleString('es-MX', { style: 'currency', currency: 'MXN' })
 
@@ -52,11 +53,36 @@ export default function Expenses() {
   const [formError, setFormError]       = useState<string | null>(null)
 
   const { data: carts = [] } = useQuery({ queryKey: ['carts'], queryFn: getCarts })
+  const { data: tenant }    = useQuery({ queryKey: ['tenant-profile'], queryFn: getTenantProfile })
 
   const { data: expenses = [], isLoading } = useQuery({
     queryKey: ['expenses', year, month, filterCartId],
     queryFn: () => getExpenses(year, month, filterCartId),
   })
+
+  // Límites basados en la fecha de registro del negocio
+  const registeredAt  = tenant ? new Date(tenant.createdAt) : new Date(now.getFullYear(), 0, 1)
+  const minYear       = registeredAt.getFullYear()
+  const minMonthOfMin = registeredAt.getMonth() + 1
+  const maxYear       = now.getFullYear()
+  const maxMonthOfMax = now.getMonth() + 1
+
+  const availableYears = Array.from({ length: maxYear - minYear + 1 }, (_, i) => minYear + i)
+
+  const availableMonths = MONTH_NAMES.map((name, i) => {
+    const m = i + 1
+    if (year === minYear && m < minMonthOfMin) return null
+    if (year === maxYear && m > maxMonthOfMax) return null
+    return { value: m, label: name }
+  }).filter(Boolean) as { value: number; label: string }[]
+
+  const handleYearChange = (newYear: number) => {
+    setYear(newYear)
+    const minM = newYear === minYear ? minMonthOfMin : 1
+    const maxM = newYear === maxYear ? maxMonthOfMax : 12
+    if (month < minM) setMonth(minM)
+    else if (month > maxM) setMonth(maxM)
+  }
 
   const totalExpenses = expenses.reduce((acc, e) => acc + e.amount, 0)
 
@@ -81,18 +107,6 @@ export default function Expenses() {
       setDeleteTarget(null)
     },
   })
-
-  const prevMonth = () => {
-    if (month === 1) { setYear((y) => y - 1); setMonth(12) }
-    else setMonth((m) => m - 1)
-  }
-  const nextMonth = () => {
-    const isCurrent = year === now.getFullYear() && month === now.getMonth() + 1
-    if (isCurrent) return
-    if (month === 12) { setYear((y) => y + 1); setMonth(1) }
-    else setMonth((m) => m + 1)
-  }
-  const isCurrent = year === now.getFullYear() && month === now.getMonth() + 1
 
   const openAdd = () => {
     setEditTarget(null)
@@ -158,20 +172,26 @@ export default function Expenses() {
         </button>
       </div>
 
-      {/* Controles: navegación de mes + filtro de carrito */}
+      {/* Controles: selectores de mes/año + filtro de carrito */}
       <div className="flex flex-wrap items-center gap-3">
-        <div className="flex items-center gap-1 bg-white border border-slate-200 rounded-lg px-1 py-1">
-          <button onClick={prevMonth} className="p-1 rounded hover:bg-slate-100 text-slate-500 transition-colors">
-            <ChevronLeft size={16} />
-          </button>
-          <span className="text-sm font-semibold text-slate-700 min-w-[130px] text-center">
-            {MONTH_NAMES[month - 1]} {year}
-          </span>
-          <button onClick={nextMonth} disabled={isCurrent}
-            className="p-1 rounded hover:bg-slate-100 text-slate-500 disabled:opacity-30 transition-colors">
-            <ChevronRight size={16} />
-          </button>
-        </div>
+        <select
+          value={month}
+          onChange={(e) => setMonth(Number(e.target.value))}
+          className="border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-700 bg-white focus:outline-none focus:border-orange-400"
+        >
+          {availableMonths.map(({ value, label }) => (
+            <option key={value} value={value}>{label}</option>
+          ))}
+        </select>
+        <select
+          value={year}
+          onChange={(e) => handleYearChange(Number(e.target.value))}
+          className="border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-700 bg-white focus:outline-none focus:border-orange-400"
+        >
+          {availableYears.map((y) => (
+            <option key={y} value={y}>{y}</option>
+          ))}
+        </select>
 
         {/* Filtro por punto de venta */}
         <div>
@@ -188,7 +208,7 @@ export default function Expenses() {
             className="border border-slate-300 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:border-violet-500"
           >
             <option value="">Todos los gastos</option>
-            <option value="0">Solo generales (sin carrito)</option>
+            <option value="0">Solo generales (sin PDV)</option>
             {carts.filter((c) => c.active).map((c) => (
               <option key={c.id} value={c.id}>{c.name}</option>
             ))}

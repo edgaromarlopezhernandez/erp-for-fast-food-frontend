@@ -16,6 +16,9 @@ export const confirmPurchaseOrder = (id: number) =>
 export const cancelPurchaseOrder = (id: number) =>
   client.post<PurchaseOrder>(`/api/purchase-orders/${id}/cancel`).then((r) => r.data)
 
+export const updatePurchaseOrder = (id: number, data: PurchaseOrderRequest) =>
+  client.patch<PurchaseOrder>(`/api/purchase-orders/${id}`, data).then((r) => r.data)
+
 export const getPurchaseSuggestions = (windowDays = 30, targetDays = 30) =>
   client
     .get<PurchaseSuggestion>('/api/purchase-orders/suggestions', {

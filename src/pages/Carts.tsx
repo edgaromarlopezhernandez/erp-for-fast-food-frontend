@@ -2,8 +2,26 @@ import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { getCarts, createCart, updateCart, deleteCart, reactivateCart } from '../api/carts'
 import { autoGenerate } from '../api/requisitions'
-import type { Cart, CartRequest } from '../types'
-import { Plus, Pencil, Trash2, X, MapPin, AlertTriangle, RotateCcw, Info, PackageCheck } from 'lucide-react'
+import type { Cart, CartRequest, CartCountStrategy, CartCountFrequency } from '../types'
+import { Plus, Pencil, Trash2, X, MapPin, AlertTriangle, RotateCcw, Info, PackageCheck, ShieldCheck } from 'lucide-react'
+
+const STRATEGY_LABELS: Record<CartCountStrategy, string> = {
+  STRICT_REQUIRED: 'Apertura + Cierre obligatorios',
+  CLOSING_ONLY: 'Solo cierre obligatorio',
+  THRESHOLD_ALERT: 'Alerta por discrepancia',
+  DISABLED: 'Sin conteo',
+}
+const STRATEGY_COLORS: Record<CartCountStrategy, string> = {
+  STRICT_REQUIRED: 'bg-violet-100 text-violet-700',
+  CLOSING_ONLY: 'bg-blue-100 text-blue-700',
+  THRESHOLD_ALERT: 'bg-amber-100 text-amber-700',
+  DISABLED: 'bg-slate-100 text-slate-500',
+}
+const FREQUENCY_LABELS: Record<CartCountFrequency, string> = {
+  PER_SHIFT: 'Por turno',
+  DAILY: 'Diario',
+  WEEKLY: 'Semanal',
+}
 
 export default function Carts() {
   const qc = useQueryClient()
@@ -15,8 +33,8 @@ export default function Carts() {
   const [newCart, setNewCart] = useState<Cart | null>(null)
   const [autoGenResult, setAutoGenResult] = useState<{ success: boolean; message: string } | null>(null)
 
-  const openCreate = () => { setForm({ name: '', location: '' }); setModal({ open: true }) }
-  const openEdit = (c: Cart) => { setForm({ name: c.name, location: c.location }); setModal({ open: true, item: c }) }
+  const openCreate = () => { setForm({ name: '', location: '', countStrategy: 'DISABLED', countFrequency: 'PER_SHIFT' }); setModal({ open: true }) }
+  const openEdit = (c: Cart) => { setForm({ name: c.name, location: c.location, countStrategy: c.countStrategy ?? 'DISABLED', countFrequency: c.countFrequency ?? 'PER_SHIFT' }); setModal({ open: true, item: c }) }
   const close = () => setModal({ open: false })
 
   const saveMut = useMutation({
@@ -39,7 +57,7 @@ export default function Carts() {
     },
     onError: (err: unknown) => {
       const msg = (err as { response?: { data?: { message?: string } } })?.response?.data?.message
-      setAutoGenResult({ success: false, message: msg || 'No se pudo generar la requisición. Verifica que la bodega tenga stock registrado.' })
+      setAutoGenResult({ success: false, message: msg || 'No se pudo generar la requisición. Verifica que la bodega tenga insumos registrados.' })
     },
   })
 
@@ -65,7 +83,7 @@ export default function Carts() {
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <h2 className="text-xl font-bold text-slate-800">Carritos / Puntos de venta</h2>
+        <h2 className="text-xl font-bold text-slate-800">Puntos de Venta (PDV)</h2>
         <button onClick={openCreate}
           className="flex items-center gap-2 bg-violet-600 hover:bg-violet-700 text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors">
           <Plus size={16} /> Nuevo
@@ -80,12 +98,12 @@ export default function Carts() {
               <Info size={18} className="text-blue-600" />
             </div>
             <div className="flex-1 min-w-0">
-              <p className="font-semibold text-blue-800 text-sm">Carrito "{newCart.name}" creado</p>
+              <p className="font-semibold text-blue-800 text-sm">PDV "{newCart.name}" creado</p>
               <p className="text-xs text-blue-700 mt-1">
                 Para iniciar operaciones, el sistema puede generar automáticamente una
                 requisición de resurtido con los insumos disponibles en bodega central.
                 Si ya tienes stock registrado, el administrador podrá aprobarla y
-                despacharla de inmediato para que el carrito quede listo para vender.
+                despacharla de inmediato para que el PDV quede listo para vender.
               </p>
               {autoGenResult ? (
                 <div className={`mt-3 flex items-start gap-2 text-xs px-3 py-2 rounded-lg border ${
@@ -130,15 +148,21 @@ export default function Carts() {
               </div>
             </div>
             {c.location && (
-              <div className="flex items-center gap-1 text-xs text-slate-400">
+              <div className="flex items-center gap-1 text-xs text-slate-400 mt-1">
                 <MapPin size={12} /> {c.location}
               </div>
             )}
+            <div className="flex items-center gap-1.5 mt-2">
+              <ShieldCheck size={11} className="text-slate-400" />
+              <span className={`text-[11px] font-medium px-1.5 py-0.5 rounded ${STRATEGY_COLORS[c.countStrategy ?? 'DISABLED']}`}>
+                {STRATEGY_LABELS[c.countStrategy ?? 'DISABLED']}
+              </span>
+            </div>
           </div>
         ))}
         {active.length === 0 && (
           <p className="text-slate-400 text-sm col-span-full py-8 text-center">
-            No hay carritos activos. Crea uno para empezar a registrar ventas.
+            No hay PDVs activos. Crea uno para empezar a registrar ventas.
           </p>
         )}
       </div>
@@ -180,7 +204,7 @@ export default function Carts() {
                 <AlertTriangle size={18} className="text-red-500" />
               </div>
               <div>
-                <h3 className="font-bold text-slate-800">Desactivar carrito</h3>
+                <h3 className="font-bold text-slate-800">Desactivar PDV</h3>
                 <p className="text-sm text-slate-500">Podrás reactivarlo después si lo necesitas.</p>
               </div>
             </div>
@@ -212,7 +236,7 @@ export default function Carts() {
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50">
           <div className="bg-white rounded-2xl p-6 w-full max-w-sm shadow-xl">
             <div className="flex items-center justify-between mb-5">
-              <h3 className="font-bold text-slate-800">{modal.item ? 'Editar carrito' : 'Nuevo carrito'}</h3>
+              <h3 className="font-bold text-slate-800">{modal.item ? 'Editar PDV' : 'Nuevo PDV'}</h3>
               <button onClick={close}><X size={20} className="text-slate-400" /></button>
             </div>
             <div className="space-y-4">
@@ -220,7 +244,7 @@ export default function Carts() {
                 <label className="text-sm font-medium text-slate-700 block mb-1">Nombre *</label>
                 <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })}
                   className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-violet-500"
-                  placeholder="Carrito 1" />
+                  placeholder="PDV Norte" />
               </div>
               <div>
                 <label className="text-sm font-medium text-slate-700 block mb-1">Ubicación</label>
@@ -228,6 +252,35 @@ export default function Carts() {
                   className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-violet-500"
                   placeholder="Parque Revolución" />
               </div>
+
+              {/* ── Estrategia de conteo ─────────────────────────────────────── */}
+              <div className="border-t border-slate-100 pt-4">
+                <label className="text-sm font-semibold text-slate-700 block mb-1 flex items-center gap-1.5">
+                  <ShieldCheck size={14} className="text-violet-500" /> Estrategia de conteo de inventario
+                </label>
+                <p className="text-xs text-slate-400 mb-2">Controla si el turno requiere conteo físico para cerrar.</p>
+                <select value={form.countStrategy ?? 'DISABLED'}
+                  onChange={(e) => setForm({ ...form, countStrategy: e.target.value as CartCountStrategy })}
+                  className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-violet-500">
+                  <option value="DISABLED">Sin conteo — solo seguimiento por receta</option>
+                  <option value="CLOSING_ONLY">Solo cierre — empleado declara al cerrar turno</option>
+                  <option value="STRICT_REQUIRED">Apertura + Cierre — máximo control (bloquea cierre)</option>
+                  <option value="THRESHOLD_ALERT">Alerta por discrepancia — conteo opcional, alerta si hay diferencia</option>
+                </select>
+              </div>
+
+              {form.countStrategy && form.countStrategy !== 'DISABLED' && (
+                <div>
+                  <label className="text-sm font-medium text-slate-700 block mb-1">Frecuencia de conteo</label>
+                  <select value={form.countFrequency ?? 'PER_SHIFT'}
+                    onChange={(e) => setForm({ ...form, countFrequency: e.target.value as CartCountFrequency })}
+                    className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-violet-500">
+                    <option value="PER_SHIFT">Por turno (cada apertura/cierre)</option>
+                    <option value="DAILY">Diario (primer turno del día)</option>
+                    <option value="WEEKLY">Semanal</option>
+                  </select>
+                </div>
+              )}
             </div>
             <div className="flex gap-3 mt-6">
               <button onClick={close}

@@ -1,6 +1,6 @@
 // ── Auth ──────────────────────────────────────────────────────────────────────
 export interface LoginRequest { username: string; password: string }
-export interface LoginResponse { token: string; role: UserRole; tenantId: number; businessName?: string | null }
+export interface LoginResponse { token: string; role: UserRole; tenantId: number; businessName?: string | null; owner: boolean }
 export interface RegisterRequest {
   businessName: string; businessSlug: string; ownerWhatsapp: string
   name: string; username: string; password: string
@@ -10,8 +10,24 @@ export interface RegisterResponse {
   token: string; subscriptionStatus: string; trialEndsAt: string
 }
 
+// ── Tenant / Business ─────────────────────────────────────────────────────────
+export type SubscriptionStatus = 'TRIAL' | 'ACTIVE' | 'EXPIRED' | 'SUSPENDED'
+export interface TenantProfile {
+  id: number
+  name: string
+  slug: string
+  ownerWhatsapp?: string
+  subscriptionStatus: SubscriptionStatus
+  trialEndsAt?: string
+  createdAt: string
+}
+export interface TenantProfileRequest {
+  name?: string
+  ownerWhatsapp?: string
+}
+
 // ── Users ─────────────────────────────────────────────────────────────────────
-export type UserRole = 'ADMIN' | 'MANAGER' | 'CASHIER'
+export type UserRole = 'ADMIN' | 'MANAGER' | 'SUPERVISOR' | 'CASHIER' | 'COOK'
 export type PayrollPeriod = 'BIWEEKLY' | 'WEEKLY' | 'MONTHLY'
 
 export interface UserResponse {
@@ -58,9 +74,52 @@ export interface InventoryItem {
   centralStock: number   // siempre el stock de bodega general
   minimumStock: number; averageCost: number
   belowMinimum: boolean; active: boolean
+  requiresShiftCount: boolean
+  containerSize?: number
+  containerLabel?: string
+  discrepancyTolerancePct?: number
 }
 export interface InventoryItemRequest {
   name: string; unitType: UnitType; minimumStock: number; averageCost: number
+  requiresShiftCount?: boolean
+  containerSize?: number
+  containerLabel?: string
+  discrepancyTolerancePct?: number
+}
+
+// ── Shift inventory count ──────────────────────────────────────────────────────
+export interface ShiftCountItem {
+  inventoryItemId: number
+  name: string
+  unitType: string
+  containerSize?: number
+  containerLabel?: string
+  currentCartStock?: number   // solo visible para admin (apertura)
+  openingDeclared?: number
+  openingCountedAt?: string
+  closingDone?: boolean
+}
+export interface ShiftCountEntry {
+  inventoryItemId: number
+  declaredQuantity: number
+  notes?: string
+}
+export interface ShiftCountSummaryItem {
+  inventoryItemId: number
+  itemName: string
+  unitType: string
+  containerSize?: number
+  containerLabel?: string
+  openingDeclared?: number
+  openingExpected?: number
+  openingDiscrepancy?: number
+  openingCountedBy?: string
+  openingCountedAt?: string
+  closingDeclared?: number
+  closingExpected?: number
+  closingDiscrepancy?: number
+  closingCountedBy?: string
+  closingCountedAt?: string
 }
 export interface StockAdjustmentRequest {
   inventoryItemId: number; movementType: MovementType; quantity: number; unitCost?: number; notes?: string
@@ -71,6 +130,32 @@ export interface InventoryMovement {
 }
 
 // ── Payroll ───────────────────────────────────────────────────────────────────
+export type PayrollIncidenceType = 'BONUS' | 'DEDUCTION'
+export interface PayrollIncidenceResponse {
+  id: number; employeeId: number; employeeName: string
+  periodLabel: string; type: PayrollIncidenceType; concept: string
+  amount: number; paymentId?: number; createdByName?: string; createdAt: string
+}
+export interface PayrollIncidenceRequest {
+  employeeId: number; periodLabel: string
+  type: PayrollIncidenceType; concept: string; amount: number
+}
+
+export type PayrollGoalBonusType = 'FLAT' | 'SALARY_PERCENTAGE' | 'EXCESS_PERCENTAGE'
+export interface GoalProgressInfo {
+  goalId: number; salesTarget: number; actualSales: number
+  achievementPct: number; goalMet: boolean
+  bonusAmount: number; bonusType: PayrollGoalBonusType; bonusValue: number
+}
+export interface PayrollGoalResponse {
+  id: number; employeeId: number
+  salesTarget: number; bonusType: PayrollGoalBonusType; bonusValue: number; active: boolean
+}
+export interface PayrollGoalRequest {
+  employeeId: number; salesTarget: number
+  bonusType: PayrollGoalBonusType; bonusValue: number; active?: boolean
+}
+
 export interface DuePayrollItem {
   employeeId: number
   employeeName: string
@@ -86,6 +171,9 @@ export interface DuePayrollItem {
   totalDaysInPeriod: number
   payrollPeriod: PayrollPeriod
   periodLabel: string
+  pendingIncidences: PayrollIncidenceResponse[]
+  goalProgress?: GoalProgressInfo
+  suggestedTotal: number
 }
 export interface PayrollPaymentRequest {
   employeeId: number
@@ -93,15 +181,19 @@ export interface PayrollPaymentRequest {
   paidDate?: string
   periodLabel: string
   notes?: string
+  includeGoalBonus?: boolean
 }
 export interface PayrollPaymentResponse {
   id: number
   employeeId: number
   employeeName: string
+  cartName?: string
+  baseAmount?: number
   amount: number
   paidDate: string
   periodLabel: string
   notes?: string
+  appliedIncidences?: PayrollIncidenceResponse[]
 }
 
 // ── Reports ───────────────────────────────────────────────────────────────────
@@ -115,6 +207,17 @@ export interface PayrollSummary {
 export interface ExpenseSummary {
   id: number; date: string; amount: number
   description: string; category?: string; cartName?: string; createdByName?: string
+}
+export interface WasteSummary {
+  id: number
+  date: string
+  itemName: string
+  unitType: string
+  quantity: number
+  estimatedCost: number
+  authorizedByName?: string
+  reason?: string
+  movementType: string
 }
 export interface FinancialReport {
   year: number; month: number; monthLabel: string
@@ -130,11 +233,13 @@ export interface FinancialReport {
   breakEvenRevenue: number | null
   salesAboveBreakEven: number
   breakEvenProgressPct: number
+  totalWaste: number
   saleCount: number; purchaseOrderCount: number; payrollPaymentCount: number
-  operationalExpenseCount: number
+  operationalExpenseCount: number; wasteCount: number
   purchaseOrders: PurchaseOrderSummary[]
   payrollPayments: PayrollSummary[]
   operationalExpenses: ExpenseSummary[]
+  wasteItems: WasteSummary[]
 }
 
 export interface IngredientCostLine {
@@ -174,6 +279,49 @@ export interface ProductProfitability {
   hasRecipe: boolean
   recipeBreakdown: IngredientCostLine[]
   modifierGroups: ModifierGroupCost[]
+}
+
+// ── Commercial KPIs ───────────────────────────────────────────────────────────
+export interface ProductSalesShare {
+  productName: string
+  totalQuantity: number
+  totalRevenue: number
+  revenueSharePct: number
+}
+export interface HourlySales {
+  hour: number
+  label: string
+  totalAmount: number
+  transactionCount: number
+  avgTicket: number
+}
+export interface DailySales {
+  dayOfWeek: string
+  label: string
+  totalAmount: number
+  transactionCount: number
+  avgTicket: number
+}
+export interface CommercialKpis {
+  averageTicket: number
+  totalTransactions: number
+  salesMix: ProductSalesShare[]
+  salesByHour: HourlySales[]
+  salesByDayOfWeek: DailySales[]
+}
+
+export interface MonthlyTopSeller {
+  year: number
+  month: number
+  monthLabel: string
+  productName: string | null
+  totalQuantity: number
+  totalRevenue: number
+  revenueSharePct: number
+  streak: number
+}
+export interface TopSellerTrend {
+  months: MonthlyTopSeller[]
 }
 
 // ── Purchase Orders (Resurtidos) ───────────────────────────────────────────────
@@ -218,6 +366,9 @@ export interface PurchaseSuggestionItem {
   inventoryItemId: number
   name: string
   unitType: string
+  containerSize?: number
+  containerLabel?: string
+  containersNeeded?: number
   currentCentralStock: number
   minimumStock: number
   totalConsumedAllCarts: number
@@ -259,8 +410,18 @@ export interface Recipe {
 }
 
 // ── Carts ─────────────────────────────────────────────────────────────────────
-export interface Cart { id: number; name: string; location?: string; active: boolean }
-export interface CartRequest { name: string; location?: string }
+export type CartCountStrategy = 'STRICT_REQUIRED' | 'CLOSING_ONLY' | 'THRESHOLD_ALERT' | 'DISABLED'
+export type CartCountFrequency = 'PER_SHIFT' | 'DAILY' | 'WEEKLY'
+export interface Cart {
+  id: number; name: string; location?: string; active: boolean
+  countStrategy: CartCountStrategy
+  countFrequency: CartCountFrequency
+}
+export interface CartRequest {
+  name: string; location?: string
+  countStrategy?: CartCountStrategy
+  countFrequency?: CartCountFrequency
+}
 
 // ── Attendance ────────────────────────────────────────────────────────────────
 export interface ShiftDaySummary {
@@ -399,4 +560,78 @@ export interface SendTicketRequest { customerName: string; customerPhone: string
 export interface SendTicketResponse {
   customerId: number; customerName: string; customerPhone: string
   ticketText: string; simulated: boolean
+}
+
+// ── Cash Account ──────────────────────────────────────────────────────────────
+export type WithdrawalCategory = 'OWNER_PROFIT' | 'REINVESTMENT' | 'OTHER'
+export interface WithdrawalResponse {
+  id: number; amount: number; withdrawalDate: string; category: WithdrawalCategory
+  notes?: string; createdByName?: string; createdAt: string
+}
+export interface WithdrawalRequest {
+  amount: number; withdrawalDate?: string; category: WithdrawalCategory; notes?: string
+}
+
+export type DepositCategory = 'OWNER_INJECTION' | 'LOAN' | 'OTHER'
+export interface CashDepositResponse {
+  id: number; amount: number; depositDate: string; category: DepositCategory
+  notes?: string; createdByName?: string; createdAt: string
+}
+export interface CashDepositRequest {
+  amount: number; depositDate?: string; category: DepositCategory; notes?: string
+}
+
+export interface CashAccount {
+  initialCapital: number
+  totalSalesIncome: number
+  totalDepositsIn: number
+  totalPurchasesOut: number
+  totalExpensesOut: number
+  totalPayrollOut: number
+  totalWithdrawalsOut: number
+  currentBalance: number
+  recentWithdrawals: WithdrawalResponse[]
+  recentDeposits: CashDepositResponse[]
+}
+
+// ── Productions ───────────────────────────────────────────────────────────────
+export type ProductionStatus = 'DRAFT' | 'CONFIRMED'
+
+export interface ProductionIngredientResponse {
+  id: number
+  inventoryItemId: number
+  inventoryItemName: string
+  unitType: string
+  quantity: number
+  unitCostSnapshot?: number
+  totalCost?: number
+}
+
+export interface ProductionResponse {
+  id: number
+  outputItemId: number
+  outputItemName: string
+  outputItemUnit: string
+  yieldQuantity: number
+  status: ProductionStatus
+  notes?: string
+  producedAt?: string
+  createdByName?: string
+  totalCost?: number
+  costPerUnit?: number
+  createdAt: string
+  ingredients: ProductionIngredientResponse[]
+}
+
+export interface ProductionIngredientRequest {
+  inventoryItemId: number
+  quantity: number
+}
+
+export interface ProductionRequest {
+  outputItemId: number
+  yieldQuantity: number
+  notes?: string
+  producedAt?: string
+  ingredients: ProductionIngredientRequest[]
 }

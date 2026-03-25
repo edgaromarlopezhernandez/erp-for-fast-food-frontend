@@ -4,44 +4,96 @@ import { useAuth } from '../auth/AuthContext'
 import {
   LayoutDashboard, Package, Tag, Warehouse, BookOpen,
   ShoppingCart, Users, Receipt, LogOut, Menu, X, Store,
-  PackagePlus, BarChart3, DollarSign, XCircle, Clock, TrendingDown, ArrowLeftRight
+  PackagePlus, BarChart3, DollarSign, XCircle, Clock,
+  TrendingDown, ArrowLeftRight, Wallet, Building2, ShieldCheck, ChefHat,
 } from 'lucide-react'
 
-const adminLinks = [
-  { to: '/dashboard',       label: 'Dashboard',    icon: LayoutDashboard },
-  { to: '/products',        label: 'Productos',    icon: Package },
-  { to: '/categories',      label: 'Categorías',   icon: Tag },
-  { to: '/inventory',       label: 'Inventario',   icon: Warehouse },
-  { to: '/purchase-orders', label: 'Resurtidos',   icon: PackagePlus },
-  { to: '/requisitions',    label: 'Requisiciones', icon: ArrowLeftRight },
-  { to: '/recipes',         label: 'Recetas',      icon: BookOpen },
-  { to: '/carts',           label: 'Carritos',     icon: ShoppingCart },
-  { to: '/users',           label: 'Empleados',    icon: Users },
-  { to: '/payroll',         label: 'Nómina',       icon: DollarSign },
-  { to: '/sales',           label: 'Ventas',       icon: Receipt },
-  { to: '/shifts',          label: 'Turnos',        icon: Clock },
-  { to: '/cancellations',   label: 'Cancelaciones', icon: XCircle },
-  { to: '/expenses',        label: 'Gastos',        icon: TrendingDown },
-  { to: '/reports',         label: 'Reportes',     icon: BarChart3 },
+// Dueño del negocio — acceso completo
+const ownerLinks = [
+  { to: '/dashboard',       label: 'Dashboard',      icon: LayoutDashboard },
+  { to: '/products',        label: 'Productos',      icon: Package },
+  { to: '/categories',      label: 'Categorías de productos', icon: Tag },
+  { to: '/inventory',       label: 'Bodega',         icon: Warehouse },
+  { to: '/purchase-orders', label: 'Resurtidos',     icon: PackagePlus },
+  { to: '/requisitions',    label: 'Requisiciones',  icon: ArrowLeftRight },
+  { to: '/recipes',         label: 'Recetas',        icon: BookOpen },
+  { to: '/productions',     label: 'Producción',     icon: ChefHat },
+  { to: '/carts',           label: 'PDVs',            icon: ShoppingCart },
+  { to: '/users',           label: 'Empleados',      icon: Users },
+  { to: '/payroll',         label: 'Nómina',         icon: DollarSign },
+  { to: '/sales',           label: 'Ventas',         icon: Receipt },
+  { to: '/shifts',          label: 'Turnos',         icon: Clock },
+  { to: '/cancellations',   label: 'Cancelaciones',  icon: XCircle },
+  { to: '/expenses',        label: 'Gastos',         icon: TrendingDown },
+  { to: '/cash-account',    label: 'Caja',           icon: Wallet },
+  { to: '/reports',         label: 'Reportes',       icon: BarChart3 },
+  { to: '/business',        label: 'Mi Negocio',     icon: Building2 },
 ]
 
-const managerLinks = [
-  { to: '/dashboard',       label: 'Dashboard',    icon: LayoutDashboard },
-  { to: '/inventory',       label: 'Inventario',   icon: Warehouse },
-  { to: '/purchase-orders', label: 'Resurtidos',   icon: PackagePlus },
-  { to: '/requisitions',    label: 'Requisiciones', icon: ArrowLeftRight },
-  { to: '/payroll',         label: 'Nómina',       icon: DollarSign },
-  { to: '/sales',           label: 'Ventas',       icon: Receipt },
-  { to: '/reports',         label: 'Reportes',     icon: BarChart3 },
+// Admin empleado — sin reportes financieros ni datos del negocio
+const adminEmployeeLinks = [
+  { to: '/dashboard',       label: 'Dashboard',      icon: LayoutDashboard },
+  { to: '/products',        label: 'Productos',      icon: Package },
+  { to: '/categories',      label: 'Categorías de productos', icon: Tag },
+  { to: '/inventory',       label: 'Bodega',         icon: Warehouse },
+  { to: '/purchase-orders', label: 'Resurtidos',     icon: PackagePlus },
+  { to: '/requisitions',    label: 'Requisiciones',  icon: ArrowLeftRight },
+  { to: '/recipes',         label: 'Recetas',        icon: BookOpen },
+  { to: '/productions',     label: 'Producción',     icon: ChefHat },
+  { to: '/carts',           label: 'PDVs',            icon: ShoppingCart },
+  { to: '/users',           label: 'Empleados',      icon: Users },
+  { to: '/payroll',         label: 'Nómina',         icon: DollarSign },
+  { to: '/sales',           label: 'Ventas',         icon: Receipt },
+  { to: '/shifts',          label: 'Turnos',         icon: Clock },
+  { to: '/cancellations',   label: 'Cancelaciones',  icon: XCircle },
+  { to: '/expenses',        label: 'Gastos',         icon: TrendingDown },
+  { to: '/cash-account',    label: 'Caja',           icon: Wallet },
 ]
+
+// Gerente — operativo, sin financieros
+const managerLinks = [
+  { to: '/dashboard',       label: 'Dashboard',      icon: LayoutDashboard },
+  { to: '/inventory',       label: 'Bodega',         icon: Warehouse },
+  { to: '/purchase-orders', label: 'Resurtidos',     icon: PackagePlus },
+  { to: '/requisitions',    label: 'Requisiciones',  icon: ArrowLeftRight },
+  { to: '/payroll',         label: 'Nómina',         icon: DollarSign },
+  { to: '/productions',     label: 'Producción',     icon: ChefHat },
+  { to: '/sales',           label: 'Ventas',         icon: Receipt },
+  { to: '/shifts',          label: 'Turnos',         icon: Clock },
+  { to: '/cancellations',   label: 'Cancelaciones',  icon: XCircle },
+  { to: '/cash-account',    label: 'Caja',           icon: Wallet },
+]
+
+// Supervisor de punto de venta
+const supervisorLinks = [
+  { to: '/dashboard',       label: 'Dashboard',      icon: LayoutDashboard },
+  { to: '/sales',           label: 'Ventas',         icon: Receipt },
+  { to: '/shifts',          label: 'Turnos',         icon: Clock },
+  { to: '/cancellations',   label: 'Cancelaciones',  icon: XCircle },
+]
+
+const ROLE_BADGE: Record<string, { label: string; color: string }> = {
+  ADMIN:      { label: 'Admin',      color: 'text-violet-400' },
+  MANAGER:    { label: 'Gerente',    color: 'text-blue-400' },
+  SUPERVISOR: { label: 'Supervisor', color: 'text-cyan-400' },
+  CASHIER:    { label: 'Cajero',     color: 'text-green-400' },
+  COOK:       { label: 'Cocinero',   color: 'text-orange-400' },
+}
 
 export default function Layout({ children }: { children: React.ReactNode }) {
-  const { user, logout, isAdmin } = useAuth()
+  const { user, logout, isOwner, isSupervisor } = useAuth()
   const location = useLocation()
   const navigate = useNavigate()
   const [open, setOpen] = useState(false)
 
-  const links = isAdmin ? adminLinks : managerLinks
+  const links = (() => {
+    if (user?.role === 'ADMIN')    return isOwner ? ownerLinks : adminEmployeeLinks
+    if (user?.role === 'MANAGER')  return managerLinks
+    if (user?.role === 'SUPERVISOR') return supervisorLinks
+    return []
+  })()
+
+  const roleBadge = ROLE_BADGE[user?.role ?? '']
 
   const handleLogout = () => {
     logout()
@@ -49,7 +101,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   }
 
   const NavLinks = () => (
-    <nav className="flex-1 px-3 py-4 space-y-1">
+    <nav className="flex-1 px-3 py-4 space-y-1 overflow-y-auto">
       {links.map(({ to, label, icon: Icon }) => {
         const active = location.pathname === to
         return (
@@ -71,6 +123,24 @@ export default function Layout({ children }: { children: React.ReactNode }) {
     </nav>
   )
 
+  const SidebarFooter = () => (
+    <div className="px-4 py-4 border-t border-slate-700">
+      <div className="flex items-center gap-1.5 mb-2">
+        {isOwner && <ShieldCheck size={12} className="text-amber-400" />}
+        <span className={`text-xs font-medium ${roleBadge?.color ?? 'text-slate-400'}`}>
+          {isOwner ? 'Propietario' : roleBadge?.label}
+        </span>
+      </div>
+      <div className="text-xs text-slate-500 truncate mb-2">{user?.businessName}</div>
+      <button
+        onClick={handleLogout}
+        className="flex items-center gap-2 text-sm text-slate-400 hover:text-white transition-colors"
+      >
+        <LogOut size={16} /> Cerrar sesión
+      </button>
+    </div>
+  )
+
   return (
     <div className="flex h-screen bg-slate-100">
       {/* Sidebar desktop */}
@@ -80,15 +150,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
           <span className="font-semibold text-white truncate">{user?.businessName?.toUpperCase() ?? 'ERP FAST FOOD'}</span>
         </div>
         <NavLinks />
-        <div className="px-4 py-4 border-t border-slate-700">
-          <div className="text-xs text-slate-400 mb-2 truncate">{user?.role}</div>
-          <button
-            onClick={handleLogout}
-            className="flex items-center gap-2 text-sm text-slate-400 hover:text-white transition-colors"
-          >
-            <LogOut size={16} /> Cerrar sesión
-          </button>
-        </div>
+        <SidebarFooter />
       </aside>
 
       {/* Mobile sidebar */}
@@ -106,12 +168,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
               </button>
             </div>
             <NavLinks />
-            <div className="px-4 py-4 border-t border-slate-700">
-              <div className="text-xs text-slate-400 mb-2">{user?.role}</div>
-              <button onClick={handleLogout} className="flex items-center gap-2 text-sm text-slate-400">
-                <LogOut size={16} /> Cerrar sesión
-              </button>
-            </div>
+            <SidebarFooter />
           </aside>
         </div>
       )}
