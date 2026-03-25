@@ -11,12 +11,18 @@ import {
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 const ROLE_LABELS: Record<UserRole, string> = {
-  ADMIN: 'Admin', MANAGER: 'Gerente', CASHIER: 'Cajero',
+  ADMIN:      'Admin',
+  MANAGER:    'Gerente',
+  SUPERVISOR: 'Supervisor',
+  CASHIER:    'Cajero',
+  COOK:       'Cocinero',
 }
 const ROLE_COLORS: Record<UserRole, string> = {
-  ADMIN: 'bg-violet-100 text-violet-700',
-  MANAGER: 'bg-blue-100 text-blue-700',
-  CASHIER: 'bg-green-100 text-green-700',
+  ADMIN:      'bg-violet-100 text-violet-700',
+  MANAGER:    'bg-blue-100 text-blue-700',
+  SUPERVISOR: 'bg-cyan-100 text-cyan-700',
+  CASHIER:    'bg-green-100 text-green-700',
+  COOK:       'bg-orange-100 text-orange-700',
 }
 const PERIOD_LABELS: Record<PayrollPeriod, string> = {
   BIWEEKLY: 'Quincenal (días 1 y 16)',
@@ -99,17 +105,39 @@ function EmployeeFormModal({
           <Section title="Acceso al sistema">
             {/* En creación siempre visible; en edición solo si el rol ya es ADMIN */}
             {(!isEdit || form.role === 'ADMIN') && (
-              <label className="flex items-center gap-2 cursor-pointer select-none">
-                <input type="checkbox" checked={!!form.isOwner}
-                  onChange={(e) => {
-                    const owner = e.target.checked
+              <button
+                type="button"
+                onClick={() => {
+                  const owner = !form.isOwner
+                  if (isEdit) {
+                    set({ isOwner: owner })
+                  } else {
                     set({ isOwner: owner, role: owner ? 'ADMIN' : 'CASHIER', cartId: undefined })
-                  }}
-                  className="accent-amber-500 w-4 h-4" />
-                <Crown size={14} className="text-amber-500" />
-                <span className="text-sm font-medium text-slate-700">Propietario del negocio</span>
-                <span className="text-xs text-slate-400">(sin nómina)</span>
-              </label>
+                  }
+                }}
+                className={`flex items-center gap-3 w-full px-3 py-2.5 rounded-lg border-2 transition-colors text-left ${
+                  form.isOwner
+                    ? 'border-amber-400 bg-amber-50'
+                    : 'border-slate-200 bg-white hover:border-slate-300'
+                }`}
+              >
+                {/* Toggle visual */}
+                <div className={`w-9 h-5 rounded-full flex items-center transition-colors shrink-0 ${
+                  form.isOwner ? 'bg-amber-500 justify-end' : 'bg-slate-300 justify-start'
+                }`}>
+                  <div className="w-4 h-4 rounded-full bg-white shadow mx-0.5" />
+                </div>
+                <Crown size={15} className={form.isOwner ? 'text-amber-500' : 'text-slate-400'} />
+                <div>
+                  <span className={`text-sm font-medium ${form.isOwner ? 'text-amber-700' : 'text-slate-600'}`}>
+                    Propietario del negocio
+                  </span>
+                  <span className="ml-2 text-xs text-slate-400">(sin nómina)</span>
+                </div>
+                <span className={`ml-auto text-xs font-semibold ${form.isOwner ? 'text-amber-600' : 'text-slate-400'}`}>
+                  {form.isOwner ? 'Activo' : 'No'}
+                </span>
+              </button>
             )}
 
             <div className="grid grid-cols-2 gap-3">
@@ -139,13 +167,16 @@ function EmployeeFormModal({
                     onChange={(e) => set({ role: e.target.value as UserRole, cartId: undefined })}
                     className={inputCls}>
                     <option value="CASHIER">Cajero</option>
+                    <option value="SUPERVISOR">Supervisor (encargado de punto)</option>
+                    <option value="COOK">Cocinero</option>
                     <option value="MANAGER">Gerente</option>
+                    <option value="ADMIN">Admin empleado</option>
                   </select>
                 </Field>
               ) : null}
             </div>
-            {form.role === 'CASHIER' && !form.isOwner && (
-              <Field label="Carrito asignado">
+            {(form.role === 'CASHIER' || form.role === 'SUPERVISOR') && !form.isOwner && (
+              <Field label="PDV asignado">
                 <select value={form.cartId ?? ''} onChange={(e) => set({ cartId: e.target.value ? Number(e.target.value) : undefined })} className={inputCls}>
                   <option value="">— Sin asignar —</option>
                   {carts.map((c) => <option key={c.id} value={c.id}>{c.name}{c.location ? ` (${c.location})` : ''}</option>)}
@@ -372,7 +403,7 @@ export default function Users() {
                           <Warehouse size={10} />
                           {u.cartName
                             ? <span className="text-violet-600 font-medium">{u.cartName}</span>
-                            : <span className="italic">Sin carrito</span>}
+                            : <span className="italic">Sin PDV</span>}
                         </button>
                       )}
                       {u.salary && (
@@ -490,7 +521,7 @@ export default function Users() {
             {deactivateTarget.cartId && (
               <div className="flex items-start gap-2 bg-amber-50 border border-amber-200 text-amber-700 text-sm px-3 py-2 rounded-lg mb-3">
                 <Warehouse size={14} className="mt-0.5 shrink-0" />
-                <span>Está asignado al carrito <strong>{deactivateTarget.cartName}</strong>. Desasígnalo primero en la pestaña de empleados.</span>
+                <span>Está asignado al PDV <strong>{deactivateTarget.cartName}</strong>. Desasígnalo primero en la pestaña de empleados.</span>
               </div>
             )}
 
@@ -561,13 +592,13 @@ export default function Users() {
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50">
           <div className="bg-white rounded-2xl p-6 w-full max-w-xs shadow-xl">
             <div className="flex items-center justify-between mb-4">
-              <h3 className="font-bold text-slate-800">Asignar carrito</h3>
+              <h3 className="font-bold text-slate-800">Asignar PDV</h3>
               <button onClick={() => setCartModal(null)}><X size={20} className="text-slate-400" /></button>
             </div>
             <p className="text-sm text-slate-500 mb-4">Cajero: <span className="font-medium text-slate-700">{cartModal.name}</span></p>
             <select value={selectedCartId} onChange={(e) => setSelectedCartId(e.target.value)}
               className={`${inputCls} mb-5`}>
-              <option value="">— Sin carrito —</option>
+              <option value="">— Sin PDV —</option>
               {carts.map((c) => <option key={c.id} value={c.id}>{c.name}{c.location ? ` (${c.location})` : ''}</option>)}
             </select>
             <div className="flex gap-3">

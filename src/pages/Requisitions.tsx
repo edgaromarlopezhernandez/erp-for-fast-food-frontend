@@ -8,9 +8,11 @@ import {
   type RequisitionResponse, type RequisitionStatus,
 } from '../api/requisitions'
 import { getCarts } from '../api/carts'
+import { getInventory } from '../api/inventory'
 import {
   CheckCircle, XCircle, Truck, PackageCheck, AlertTriangle,
   ChevronDown, ChevronUp, X, RotateCcw, Zap, Scale, FileWarning, BadgeAlert, Lightbulb,
+  ArrowRight,
 } from 'lucide-react'
 
 // ── Status config ─────────────────────────────────────────────────────────────
@@ -67,6 +69,10 @@ export default function Requisitions() {
   const { data: carts = [] } = useQuery({ queryKey: ['carts'], queryFn: getCarts })
   const activeCarts = carts.filter((c) => c.active)
 
+  const { data: inventoryItems = [] } = useQuery({ queryKey: ['inventory'], queryFn: () => getInventory() })
+  const hasInventory = inventoryItems.length > 0
+  const hasPdvs = activeCarts.length > 0
+
   const { data: availableMonths = [] } = useQuery({
     queryKey: ['requisition-months'],
     queryFn: getRequisitionMonths,
@@ -113,7 +119,7 @@ export default function Requisitions() {
             onChange={(e) => setGenerateCartId(e.target.value ? Number(e.target.value) : undefined)}
             className="border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-700 bg-white focus:outline-none focus:border-violet-500"
           >
-            <option value="">Seleccionar carrito...</option>
+            <option value="">Seleccionar PDV...</option>
             {activeCarts.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
           </select>
           <button
@@ -125,6 +131,42 @@ export default function Requisitions() {
           </button>
         </div>
       </div>
+      {/* ── Setup alerts ──────────────────────────────────────────────────────── */}
+      {!hasInventory && (
+        <div className="bg-amber-50 border border-amber-300 rounded-xl p-4 flex items-start gap-3">
+          <div className="w-8 h-8 rounded-full bg-amber-100 flex items-center justify-center shrink-0 mt-0.5">
+            <AlertTriangle size={16} className="text-amber-600" />
+          </div>
+          <div>
+            <p className="text-sm font-semibold text-amber-800">No hay insumos en inventario</p>
+            <p className="text-xs text-amber-700 mt-0.5">
+              Para usar las requisiciones primero necesitas registrar insumos en bodega central.
+              Sin insumos registrados no hay nada que traspasar a los PDVs.
+            </p>
+            <a href="/inventory" className="inline-flex items-center gap-1 text-xs font-semibold text-amber-700 hover:text-amber-900 mt-2 underline underline-offset-2">
+              Ir a Inventario <ArrowRight size={12} />
+            </a>
+          </div>
+        </div>
+      )}
+      {hasInventory && !hasPdvs && (
+        <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 flex items-start gap-3">
+          <div className="w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center shrink-0 mt-0.5">
+            <Lightbulb size={16} className="text-blue-600" />
+          </div>
+          <div>
+            <p className="text-sm font-semibold text-blue-800">No hay PDVs registrados</p>
+            <p className="text-xs text-blue-700 mt-0.5">
+              Tienes insumos en bodega pero aún no has creado ningún Punto de Venta.
+              Crea al menos un PDV para poder generar y despachar requisiciones.
+            </p>
+            <a href="/carts" className="inline-flex items-center gap-1 text-xs font-semibold text-blue-700 hover:text-blue-900 mt-2 underline underline-offset-2">
+              Ir a PDVs <ArrowRight size={12} />
+            </a>
+          </div>
+        </div>
+      )}
+
       {generateError && (
         <div className="bg-red-50 border border-red-200 text-red-700 text-sm px-4 py-2 rounded-lg flex items-center gap-2">
           <AlertTriangle size={14} /> {generateError}
@@ -202,7 +244,7 @@ export default function Requisitions() {
       {rejectModal && (
         <SimpleActionModal
           title="Rechazar requisición"
-          description={`¿Rechazar la requisición de "${rejectModal.cartName}"?`}
+          description={`¿Rechazar la requisición del PDV "${rejectModal.cartName}"?`}
           notesLabel="Motivo del rechazo"
           confirmLabel="Rechazar"
           confirmClass="bg-red-500 hover:bg-red-600"
@@ -713,7 +755,7 @@ function ReceiveModal({ req, onClose, onDone }: {
                 <AlertTriangle size={15} className="text-amber-600 shrink-0 mt-0.5" />
                 <p className="text-xs text-amber-700 leading-relaxed">
                   <span className="font-semibold">Estás registrando la recepción como administrador.</span>{' '}
-                  Normalmente esta acción la realiza el vendedor del carrito.
+                  Normalmente esta acción la realiza el vendedor del PDV.
                   Indica el motivo — este registro queda en auditoría.
                 </p>
               </div>

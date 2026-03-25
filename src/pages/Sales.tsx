@@ -2,8 +2,9 @@ import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { getSalesByRange, cancelSale } from '../api/sales'
 import { getCarts } from '../api/carts'
+import { getTenantProfile } from '../api/tenant'
 import type { Sale } from '../types'
-import { XCircle, ChevronDown, ChevronUp, ChevronLeft, ChevronRight } from 'lucide-react'
+import { XCircle, ChevronDown, ChevronUp } from 'lucide-react'
 
 // ── Helpers de fecha ──────────────────────────────────────────────────────────
 function monthBounds(year: number, month: number): { from: string; to: string } {
@@ -33,6 +34,7 @@ export default function Sales() {
   const { from, to } = monthBounds(year, month)
 
   const { data: carts = [] } = useQuery({ queryKey: ['carts'], queryFn: getCarts })
+  const { data: tenant } = useQuery({ queryKey: ['tenant-profile'], queryFn: getTenantProfile })
   const { data: sales = [], isLoading } = useQuery({
     queryKey: ['sales', year, month, cartFilter],
     queryFn: () => getSalesByRange(from, to, cartFilter),
@@ -43,17 +45,33 @@ export default function Sales() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ['sales'] }),
   })
 
-  const prevMonth = () => {
-    if (month === 1) { setYear(y => y - 1); setMonth(12) }
-    else setMonth(m => m - 1)
+  // Límites de navegación basados en la fecha de registro del negocio
+  const registeredAt  = tenant ? new Date(tenant.createdAt) : new Date(now.getFullYear(), 0, 1)
+  const minYear       = registeredAt.getFullYear()
+  const minMonthOfMin = registeredAt.getMonth() + 1   // 1-12
+  const maxYear       = now.getFullYear()
+  const maxMonthOfMax = now.getMonth() + 1
+
+  const availableYears = Array.from(
+    { length: maxYear - minYear + 1 },
+    (_, i) => minYear + i,
+  )
+
+  const availableMonths = MONTH_NAMES.map((name, i) => {
+    const m = i + 1
+    if (year === minYear && m < minMonthOfMin) return null
+    if (year === maxYear && m > maxMonthOfMax) return null
+    return { value: m, label: name }
+  }).filter(Boolean) as { value: number; label: string }[]
+
+  // Si el mes seleccionado queda fuera del rango al cambiar año, lo corregimos
+  const handleYearChange = (newYear: number) => {
+    setYear(newYear)
+    const minM = newYear === minYear ? minMonthOfMin : 1
+    const maxM = newYear === maxYear ? maxMonthOfMax : 12
+    if (month < minM) setMonth(minM)
+    else if (month > maxM) setMonth(maxM)
   }
-  const nextMonth = () => {
-    const isCurrentMonth = year === now.getFullYear() && month === now.getMonth() + 1
-    if (isCurrentMonth) return
-    if (month === 12) { setYear(y => y + 1); setMonth(1) }
-    else setMonth(m => m + 1)
-  }
-  const isCurrentMonth = year === now.getFullYear() && month === now.getMonth() + 1
 
   const completedSales = sales.filter(s => s.status === 'COMPLETED')
   const totalRevenue   = completedSales.reduce((acc, s) => acc + s.totalAmount, 0)
@@ -67,20 +85,25 @@ export default function Sales() {
       <div className="flex items-center justify-between flex-wrap gap-3">
         <h2 className="text-xl font-bold text-slate-800">Ventas</h2>
         <div className="flex items-center gap-3 flex-wrap">
-          {/* Navegación de mes */}
-          <div className="flex items-center gap-1 bg-white border border-slate-200 rounded-lg px-1 py-1">
-            <button onClick={prevMonth}
-              className="p-1 rounded hover:bg-slate-100 text-slate-500 transition-colors">
-              <ChevronLeft size={16} />
-            </button>
-            <span className="text-sm font-semibold text-slate-700 min-w-[130px] text-center">
-              {MONTH_NAMES[month - 1]} {year}
-            </span>
-            <button onClick={nextMonth} disabled={isCurrentMonth}
-              className="p-1 rounded hover:bg-slate-100 text-slate-500 disabled:opacity-30 transition-colors">
-              <ChevronRight size={16} />
-            </button>
-          </div>
+          {/* Selectores de mes y año */}
+          <select
+            value={month}
+            onChange={(e) => setMonth(Number(e.target.value))}
+            className="border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-700 bg-white focus:outline-none focus:border-violet-500"
+          >
+            {availableMonths.map(({ value, label }) => (
+              <option key={value} value={value}>{label}</option>
+            ))}
+          </select>
+          <select
+            value={year}
+            onChange={(e) => handleYearChange(Number(e.target.value))}
+            className="border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-700 bg-white focus:outline-none focus:border-violet-500"
+          >
+            {availableYears.map((y) => (
+              <option key={y} value={y}>{y}</option>
+            ))}
+          </select>
 
           {/* Filtro por carrito */}
           <select
@@ -88,7 +111,7 @@ export default function Sales() {
             onChange={(e) => setCartFilter(e.target.value ? parseInt(e.target.value) : undefined)}
             className="border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-violet-500"
           >
-            <option value="">Todos los carritos</option>
+            <option value="">Todos los PDVs</option>
             {carts.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
           </select>
         </div>

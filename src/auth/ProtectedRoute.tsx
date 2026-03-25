@@ -7,13 +7,17 @@ interface Props {
   allowedRoles?: UserRole[]
 }
 
+const POS_ROLES: UserRole[] = ['CASHIER', 'COOK', 'SUPERVISOR']
+
 export default function ProtectedRoute({ children, allowedRoles }: Props) {
   const { user } = useAuth()
+  const token = localStorage.getItem('token')
 
-  if (!user) return <Navigate to="/login" replace />
+  if (!user || !token) return <Navigate to="/login" replace />
 
   if (allowedRoles && !allowedRoles.includes(user.role)) {
-    return <Navigate to={user.role === 'CASHIER' ? '/pos' : '/dashboard'} replace />
+    const defaultPath = POS_ROLES.includes(user.role) ? '/pos' : '/dashboard'
+    return <Navigate to={defaultPath} replace />
   }
 
   return <>{children}</>

@@ -22,6 +22,9 @@ import Requisitions from './pages/Requisitions'
 import Payroll from './pages/Payroll'
 import Cancellations from './pages/Cancellations'
 import Shifts from './pages/Shifts'
+import CashAccount from './pages/CashAccount'
+import BusinessSettings from './pages/BusinessSettings'
+import Productions from './pages/Productions'
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { retry: 1, staleTime: 30_000 } },
@@ -29,13 +32,20 @@ const queryClient = new QueryClient({
 
 function AppRoutes() {
   const { user } = useAuth()
+  // El token en localStorage es la fuente de verdad: si se limpió el storage
+  // (misma pestaña) el estado React puede quedar desincronizado.
+  const isAuthenticated = !!user && !!localStorage.getItem('token')
+  const POS_ROLES = ['CASHIER', 'COOK']
+  const homePath = POS_ROLES.includes(user?.role ?? '') ? '/pos' : '/dashboard'
 
   return (
     <Routes>
       <Route path="/login"
-        element={user ? <Navigate to={user.role === 'CASHIER' ? '/pos' : '/dashboard'} replace /> : <Login />}
+        element={isAuthenticated ? <Navigate to={homePath} replace /> : <Login />}
       />
-      <Route path="/register" element={<Register />} />
+      <Route path="/register"
+        element={isAuthenticated ? <Navigate to={homePath} replace /> : <Register />}
+      />
 
       {/* POS — full screen, no sidebar */}
       <Route path="/pos" element={
@@ -81,7 +91,7 @@ function AppRoutes() {
         </ProtectedRoute>
       } />
       <Route path="/sales" element={
-        <ProtectedRoute allowedRoles={['ADMIN', 'MANAGER']}>
+        <ProtectedRoute allowedRoles={['ADMIN', 'MANAGER', 'SUPERVISOR']}>
           <Layout><Sales /></Layout>
         </ProtectedRoute>
       } />
@@ -101,7 +111,7 @@ function AppRoutes() {
         </ProtectedRoute>
       } />
       <Route path="/reports" element={
-        <ProtectedRoute allowedRoles={['ADMIN', 'MANAGER']}>
+        <ProtectedRoute allowedRoles={['ADMIN']}>
           <Layout><Reports /></Layout>
         </ProtectedRoute>
       } />
@@ -111,19 +121,34 @@ function AppRoutes() {
         </ProtectedRoute>
       } />
       <Route path="/cancellations" element={
-        <ProtectedRoute allowedRoles={['ADMIN']}>
+        <ProtectedRoute allowedRoles={['ADMIN', 'SUPERVISOR']}>
           <Layout><Cancellations /></Layout>
         </ProtectedRoute>
       } />
       <Route path="/shifts" element={
-        <ProtectedRoute allowedRoles={['ADMIN', 'MANAGER']}>
+        <ProtectedRoute allowedRoles={['ADMIN', 'MANAGER', 'SUPERVISOR']}>
           <Layout><Shifts /></Layout>
+        </ProtectedRoute>
+      } />
+      <Route path="/cash-account" element={
+        <ProtectedRoute allowedRoles={['ADMIN', 'MANAGER']}>
+          <Layout><CashAccount /></Layout>
+        </ProtectedRoute>
+      } />
+      <Route path="/business" element={
+        <ProtectedRoute allowedRoles={['ADMIN']}>
+          <Layout><BusinessSettings /></Layout>
+        </ProtectedRoute>
+      } />
+      <Route path="/productions" element={
+        <ProtectedRoute allowedRoles={['ADMIN', 'MANAGER', 'SUPERVISOR']}>
+          <Layout><Productions /></Layout>
         </ProtectedRoute>
       } />
 
       <Route path="/" element={
-        user
-          ? <Navigate to={user.role === 'CASHIER' ? '/pos' : '/dashboard'} replace />
+        isAuthenticated
+          ? <Navigate to={homePath} replace />
           : <Navigate to="/login" replace />
       } />
     </Routes>

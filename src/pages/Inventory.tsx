@@ -144,7 +144,11 @@ export default function Inventory() {
   })
 
   const openEdit = (item: InventoryItem) => {
-    setForm({ name: item.name, unitType: item.unitType, minimumStock: item.minimumStock, averageCost: item.averageCost })
+    setForm({
+      name: item.name, unitType: item.unitType, minimumStock: item.minimumStock, averageCost: item.averageCost,
+      requiresShiftCount: item.requiresShiftCount, containerSize: item.containerSize, containerLabel: item.containerLabel,
+      discrepancyTolerancePct: item.discrepancyTolerancePct,
+    })
     setCostCalc({ totalPrice: '', totalQty: '', initialStock: '' })
     setItemModal({ open: true, item })
   }
@@ -196,7 +200,7 @@ export default function Inventory() {
       {/* Header */}
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
-          <h2 className="text-xl font-bold text-slate-800">Inventario</h2>
+          <h2 className="text-xl font-bold text-slate-800">Bodega / Inventario</h2>
           {isCartView && selectedCartName && (
             <p className="text-xs text-slate-400 mt-0.5">Stock en {selectedCartName}</p>
           )}
@@ -204,15 +208,17 @@ export default function Inventory() {
         <div className="flex gap-2">
           <button
             onClick={() => { setReconcileRows({}); setReconcileNotes(''); setReconcileError(''); setReconcileModal(true) }}
-            className="flex items-center gap-1.5 border border-slate-300 text-slate-600 hover:bg-slate-50 text-sm font-medium px-3 py-2 rounded-lg transition-colors">
+            disabled={items.length === 0}
+            className="flex items-center gap-1.5 border border-slate-300 text-slate-600 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed text-sm font-medium px-3 py-2 rounded-lg transition-colors">
             <ClipboardList size={15} /> Toma de inventario
           </button>
           {!isCartView && (
             <>
               <button
                 onClick={openTransfer}
-                className="flex items-center gap-1.5 border border-violet-300 text-violet-700 hover:bg-violet-50 text-sm font-medium px-3 py-2 rounded-lg transition-colors">
-                <ArrowRightLeft size={15} /> Transferir a carrito
+                disabled={items.length === 0}
+                className="flex items-center gap-1.5 border border-violet-300 text-violet-700 hover:bg-violet-50 disabled:opacity-40 disabled:cursor-not-allowed text-sm font-medium px-3 py-2 rounded-lg transition-colors">
+                <ArrowRightLeft size={15} /> Transferir a PDV
               </button>
               <button
                 onClick={() => { setForm({ name: '', unitType: 'PIECE', minimumStock: 0, averageCost: 0 }); setCostCalc({ totalPrice: '', totalQty: '', initialStock: '' }); setItemModal({ open: true }) }}
@@ -292,9 +298,23 @@ export default function Inventory() {
           </div>
         ))}
         {items.length === 0 && (
-          <p className="text-slate-400 text-sm col-span-full py-8 text-center">
-            {isCartView ? 'Sin stock transferido a este carrito.' : 'No hay insumos registrados.'}
-          </p>
+          <div className="col-span-full py-6">
+            {!isCartView ? (
+              <div className="bg-amber-50 border border-amber-300 rounded-xl p-4 flex items-start gap-3 max-w-md mx-auto">
+                <div className="w-8 h-8 rounded-full bg-amber-100 flex items-center justify-center shrink-0 mt-0.5">
+                  <AlertTriangle size={16} className="text-amber-600" />
+                </div>
+                <div>
+                  <p className="text-sm font-semibold text-amber-800">La bodega está vacía</p>
+                  <p className="text-xs text-amber-700 mt-0.5">
+                    Agrega tus insumos a bodega para poder abastecer tus PDVs, registrar recetas y controlar tu inventario.
+                  </p>
+                </div>
+              </div>
+            ) : (
+              <p className="text-slate-400 text-sm text-center">Sin stock transferido a este PDV.</p>
+            )}
+          </div>
         )}
       </div>
 
@@ -574,6 +594,64 @@ export default function Inventory() {
                 )}
               </div>
             </div>
+
+            {/* ── Presentación / Envase ─────────────────────────────────────── */}
+            <div className="border-t border-slate-100 pt-4 space-y-2">
+              <div>
+                <p className="text-sm font-semibold text-slate-700 mb-0.5">Presentación de compra</p>
+                <p className="text-xs text-slate-400 mb-2">
+                  El sistema usa esto para sugerir resurtidos en envases completos en lugar de gramos/piezas sueltas.
+                  Ej: mayonesa en frascos de 3,400 g.
+                </p>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="text-xs text-slate-500 block mb-1">
+                    Tamaño del envase ({form.unitType === 'PIECE' ? 'pzas' : form.unitType === 'GRAM' ? 'g' : 'ml'})
+                  </label>
+                  <input type="number" min={0} step="1"
+                    value={form.containerSize ?? ''}
+                    onChange={(e) => setForm({ ...form, containerSize: e.target.value ? parseFloat(e.target.value) : undefined })}
+                    placeholder="ej. 3400"
+                    className="w-full border border-slate-300 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:border-violet-500" />
+                </div>
+                <div>
+                  <label className="text-xs text-slate-500 block mb-1">Nombre de la presentación</label>
+                  <input type="text"
+                    value={form.containerLabel ?? ''}
+                    onChange={(e) => setForm({ ...form, containerLabel: e.target.value || undefined })}
+                    placeholder="frasco, lata, caja, bolsa..."
+                    className="w-full border border-slate-300 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:border-violet-500" />
+                </div>
+              </div>
+              {form.containerSize && form.containerLabel && (
+                <p className="text-xs text-teal-700 bg-teal-50 border border-teal-200 rounded-lg px-3 py-1.5">
+                  Los sugeridos de resurtido se calcularán en <strong>{form.containerLabel}s de {form.containerSize} {form.unitType === 'PIECE' ? 'pzas' : form.unitType === 'GRAM' ? 'g' : 'ml'}</strong>.
+                </p>
+              )}
+            </div>
+
+            {/* ── Conteo de turno ───────────────────────────────────────────── */}
+            <div className="border-t border-slate-100 pt-4 space-y-3">
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input type="checkbox" checked={!!form.requiresShiftCount}
+                  onChange={(e) => setForm({ ...form, requiresShiftCount: e.target.checked })}
+                  className="w-4 h-4 rounded accent-violet-600" />
+                <span className="text-sm font-medium text-slate-700">Requiere conteo físico en turno</span>
+              </label>
+              {form.requiresShiftCount && (
+                <div className="pl-6">
+                  <label className="text-xs text-slate-500 block mb-1">Tolerancia de discrepancia (%)</label>
+                  <input type="number" min={0} max={100} step="0.1"
+                    value={form.discrepancyTolerancePct ?? ''}
+                    onChange={(e) => setForm({ ...form, discrepancyTolerancePct: e.target.value ? parseFloat(e.target.value) : undefined })}
+                    placeholder="ej. 5 = tolerar hasta 5% de diferencia"
+                    className="w-full border border-slate-300 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:border-violet-500" />
+                  <p className="text-xs text-slate-400 mt-1">Estrategia ALERTA. Vacío = cualquier diferencia genera alerta.</p>
+                </div>
+              )}
+            </div>
+
             <div className="flex gap-3 mt-6">
               <button onClick={() => setItemModal({ open: false })}
                 className="flex-1 border border-slate-300 text-slate-700 text-sm py-2 rounded-lg hover:bg-slate-50">Cancelar</button>
