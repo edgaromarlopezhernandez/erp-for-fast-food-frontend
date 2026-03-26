@@ -7,9 +7,11 @@ import { getPayrollDueToday } from '../api/payroll'
 import { getCancellationRequests } from '../api/cancellations'
 import { getShifts } from '../api/shifts'
 import { getRequisitions } from '../api/requisitions'
+import { getPurchaseOrders } from '../api/purchaseOrders'
+import { getGeneralRegister } from '../api/cashAccount'
 import {
   AlertTriangle, TrendingUp, ShoppingBag, Warehouse,
-  Bell, DollarSign, XCircle, Clock, LayoutGrid, Truck,
+  Bell, DollarSign, XCircle, Clock, LayoutGrid, Truck, BanknoteIcon,
 } from 'lucide-react'
 import { Link } from 'react-router-dom'
 
@@ -44,6 +46,15 @@ export default function Dashboard() {
   const { data: pendingReqs = [] }        = useQuery({ queryKey: ['requisitions', 'SOLICITADA'],       queryFn: () => getRequisitions({ status: 'SOLICITADA' }),       refetchInterval: 60_000 })
   const { data: approvedReqs = [] }       = useQuery({ queryKey: ['requisitions', 'APROBADA'],         queryFn: () => getRequisitions({ status: 'APROBADA' }),         refetchInterval: 60_000 })
   const { data: discrepancyReqs = [] }    = useQuery({ queryKey: ['requisitions', 'CON_DISCREPANCIA'], queryFn: () => getRequisitions({ status: 'CON_DISCREPANCIA' }), refetchInterval: 60_000 })
+  const { data: draftOrders = [] }        = useQuery({ queryKey: ['purchase-orders'],                  queryFn: getPurchaseOrders,                                     refetchInterval: 60_000 })
+  const { data: generalRegister }         = useQuery({ queryKey: ['general-register'],                 queryFn: getGeneralRegister,                                    refetchInterval: 60_000 })
+
+  // Alerta de fondos insuficientes para resurtidos pendientes
+  const pendingDraftOrders = draftOrders.filter(o => o.status === 'DRAFT')
+  const totalDraftCost = pendingDraftOrders.reduce((sum, o) => sum + o.totalAmount, 0)
+  const cashBalance = generalRegister?.balance ?? 0
+  const insufficientFunds = pendingDraftOrders.length > 0 && totalDraftCost > cashBalance
+  const fundingShortfall = totalDraftCost - cashBalance
 
   const todaySales = sales.filter((s) => {
     const d = new Date(s.soldAt)
@@ -85,6 +96,40 @@ export default function Dashboard() {
       </div>
 
       {/* Global alerts */}
+
+      {/* ── Fondos insuficientes para resurtidos (operación crítica) ── */}
+      {insufficientFunds && (
+        <div className="bg-red-600 text-white rounded-xl p-4 shadow-lg">
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2 font-bold text-base">
+              <BanknoteIcon size={20} className="shrink-0" />
+              <span>Fondos insuficientes para resurtir bodega</span>
+            </div>
+            <Link to="/purchase-orders" className="text-xs text-red-100 font-semibold underline shrink-0">
+              Ver resurtidos →
+            </Link>
+          </div>
+          <p className="text-sm text-red-100 mt-1.5">
+            Tienes{' '}
+            <span className="font-semibold text-white">
+              {pendingDraftOrders.length} {pendingDraftOrders.length === 1 ? 'orden pendiente' : 'órdenes pendientes'}
+            </span>
+            {' '}por{' '}
+            <span className="font-semibold text-white">
+              {totalDraftCost.toLocaleString('es-MX', { style: 'currency', currency: 'MXN' })}
+            </span>
+            {' '}pero tu caja general solo tiene{' '}
+            <span className="font-semibold text-white">
+              {cashBalance.toLocaleString('es-MX', { style: 'currency', currency: 'MXN' })}
+            </span>.
+            {' '}Faltan{' '}
+            <span className="font-bold text-yellow-200">
+              {fundingShortfall.toLocaleString('es-MX', { style: 'currency', currency: 'MXN' })}
+            </span>
+            {' '}para poder confirmar. Sin resurtido no hay insumos para vender.
+          </p>
+        </div>
+      )}
 
       {/* ── Requisiciones pendientes de aprobación (bloquean la operación) ── */}
       {pendingReqs.length > 0 && (

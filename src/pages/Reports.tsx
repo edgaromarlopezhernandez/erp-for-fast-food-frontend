@@ -153,8 +153,8 @@ export default function Reports() {
               <select value={cartId ?? ''}
                 onChange={(e) => setCartId(e.target.value ? Number(e.target.value) : undefined)}
                 className="border border-slate-300 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:border-violet-500">
-                <option value="">Todos los carritos</option>
-                {carts.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                <option value="">Negocio completo</option>
+                {carts.filter((c) => c.active).map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
               </select>
             </div>
           </div>
@@ -692,16 +692,27 @@ export default function Reports() {
                 {availableMonths.map(({ value, name }) => <option key={value} value={value}>{name}</option>)}
               </select>
             </div>
-            {carts.length > 0 && (
-              <div>
-                <label className="text-xs font-medium text-slate-500 block mb-1">Carrito</label>
-                <select value={cartId ?? ''}
-                  onChange={(e) => setCartId(e.target.value ? Number(e.target.value) : undefined)}
-                  className="border border-slate-300 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:border-violet-500">
-                  <option value="">Todos los carritos</option>
-                  {carts.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-                </select>
-              </div>
+            <div>
+              <label className="text-xs font-medium text-slate-500 block mb-1 flex items-center gap-1">
+                <Warehouse size={10} /> Punto de venta
+              </label>
+              <select value={cartId ?? ''}
+                onChange={(e) => setCartId(e.target.value ? Number(e.target.value) : undefined)}
+                className="border border-slate-300 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:border-violet-500">
+                <option value="">Negocio completo</option>
+                {carts.filter((c) => c.active).map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+              </select>
+            </div>
+          </div>
+
+          {/* Scope badge */}
+          <div className="flex items-center gap-2 flex-wrap">
+            {cartId ? (
+              <span className="text-sm bg-violet-100 text-violet-700 px-2 py-0.5 rounded-full font-medium flex items-center gap-1">
+                <Warehouse size={12} /> {carts.find((c) => c.id === cartId)?.name ?? 'PDV'}
+              </span>
+            ) : (
+              <span className="text-xs bg-slate-100 text-slate-500 px-2 py-0.5 rounded-full">Negocio completo</span>
             )}
           </div>
 

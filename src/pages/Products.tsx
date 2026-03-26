@@ -53,8 +53,23 @@ export default function Products() {
 
   if (isLoading && products.length === 0) return <div className="text-slate-400 text-sm">Cargando...</div>
 
+  const noCategories = categories.length === 0
+
   return (
     <div className="space-y-4">
+      {noCategories && (
+        <div className="bg-red-50 border border-red-300 rounded-xl p-4 flex items-start gap-3">
+          <AlertTriangle size={18} className="text-red-600 shrink-0 mt-0.5" />
+          <div className="flex-1">
+            <p className="text-sm font-semibold text-red-700">No hay categorías registradas</p>
+            <p className="text-sm text-red-600 mt-0.5">
+              Los productos se agrupan en categorías para mayor control y trazabilidad en reportes.
+              Agrega al menos una categoría antes de crear productos.
+            </p>
+          </div>
+        </div>
+      )}
+
       <div className="flex items-center justify-between gap-3 flex-wrap">
         <h2 className="text-xl font-bold text-slate-800">Productos</h2>
         <div className="flex items-center gap-2">
@@ -78,8 +93,11 @@ export default function Products() {
             })}
           </div>
           {filter === 'active' && (
-            <button onClick={openCreate}
-              className="flex items-center gap-2 bg-violet-600 hover:bg-violet-700 text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors">
+            <button
+              onClick={openCreate}
+              disabled={noCategories}
+              title={noCategories ? 'Agrega una categoría primero' : undefined}
+              className="flex items-center gap-2 bg-violet-600 hover:bg-violet-700 disabled:opacity-40 disabled:cursor-not-allowed text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors">
               <Plus size={16} /> Nuevo
             </button>
           )}

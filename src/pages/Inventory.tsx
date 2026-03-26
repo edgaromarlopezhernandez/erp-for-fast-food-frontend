@@ -3,12 +3,15 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   getInventory, createInventoryItem, updateInventoryItem,
   adjustStock, getMovements, deleteInventoryItem, transferToCart,
-  getCartStockAnalysis, reconcileStock,
+  getCartStockAnalysis, reconcileStock, getPerishableAnalysis,
   type TransferLine,
 } from '../api/inventory'
 import { getCarts } from '../api/carts'
-import type { InventoryItem, InventoryItemRequest, MovementType, UnitType } from '../types'
-import { Plus, Pencil, TrendingUp, AlertTriangle, X, History, Trash2, Warehouse, ArrowRightLeft, BarChart2, ClipboardList } from 'lucide-react'
+import { getTenantProfile } from '../api/tenant'
+import type { InventoryItem, InventoryItemRequest, MovementType, UnitType, PerishableItemAnalysis } from '../types'
+import { Plus, Pencil, TrendingUp, AlertTriangle, X, History, Trash2, Warehouse, ArrowRightLeft, BarChart2, ClipboardList, PackagePlus } from 'lucide-react'
+
+type BulkRow = { id: number; name: string; unitType: UnitType; qty: string; price: string }
 
 const UNIT_LABELS: Record<UnitType, string> = {
   PIECE: 'pza', GRAM: 'g', MILLILITER: 'ml',
@@ -54,10 +57,24 @@ export default function Inventory() {
   const [reconcileNotes, setReconcileNotes] = useState('')
   const [reconcileError, setReconcileError] = useState('')
 
+  // Bulk initial load
+  const [bulkModal, setBulkModal] = useState(false)
+  const [bulkRows, setBulkRows] = useState<BulkRow[]>([])
+  const [bulkError, setBulkError] = useState('')
+
   const [form, setForm] = useState<InventoryItemRequest>({
     name: '', unitType: 'PIECE', minimumStock: 0, averageCost: 0,
   })
-  const [costCalc, setCostCalc] = useState({ totalPrice: '', totalQty: '', initialStock: '' })
+  const [costCalc, setCostCalc] = useState({ totalPrice: '', totalQty: '' })
+  const [showInitialStock, setShowInitialStock] = useState(false)
+
+  const { data: tenantProfile } = useQuery({ queryKey: ['tenant-profile'], queryFn: getTenantProfile })
+  const withinOnboardingPeriod = (() => {
+    if (!tenantProfile?.createdAt) return false
+    const createdAt = new Date(tenantProfile.createdAt)
+    const onboardingEnd = new Date(createdAt.getTime() + 30 * 24 * 60 * 60 * 1000)
+    return new Date() <= onboardingEnd
+  })()
   const [adjust, setAdjust] = useState({ movementType: 'PURCHASE' as MovementType, quantity: 0, notes: '' })
   const [adjustCost, setAdjustCost] = useState({ totalPrice: '', totalQty: '' })
 
@@ -72,13 +89,24 @@ export default function Inventory() {
       const item = itemModal.item
         ? await updateInventoryItem(itemModal.item.id, form)
         : await createInventoryItem(form)
-      const initQty = parseFloat(costCalc.initialStock)
-      if (!itemModal.item && initQty > 0) {
-        await adjustStock({ inventoryItemId: item.id, movementType: 'OPENING_STOCK', quantity: initQty })
+
+      if (!itemModal.item) {
+        const initQty   = parseFloat(costCalc.totalQty)
+        const totalPaid = parseFloat(costCalc.totalPrice)
+        if (initQty > 0) {
+          const unitCost = initQty > 0 && totalPaid > 0 ? totalPaid / initQty : undefined
+          // Stock inicial: establece CPP y cantidad sin afectar el balance de caja.
+          // El valor se refleja en "Inventario en stock" del desglose patrimonial.
+          await adjustStock({ inventoryItemId: item.id, movementType: 'OPENING_STOCK', quantity: initQty, unitCost })
+        }
       }
       return item
     },
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ['inventory'] }); setItemModal({ open: false }) },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['inventory'] })
+      qc.invalidateQueries({ queryKey: ['expenses'] })
+      setItemModal({ open: false })
+    },
   })
 
   const adjustMut = useMutation({
@@ -143,13 +171,43 @@ export default function Inventory() {
     },
   })
 
+  const bulkMut = useMutation({
+    mutationFn: async () => {
+      const validRows = bulkRows.filter(r => r.name.trim() && parseFloat(r.qty) > 0)
+      if (validRows.length === 0) throw new Error('Agrega al menos un insumo con nombre y cantidad.')
+      const today = new Date().toISOString().split('T')[0]
+      for (const row of validRows) {
+        const qty    = parseFloat(row.qty)
+        const paid   = parseFloat(row.price)
+        const unitCost = qty > 0 && paid > 0 ? paid / qty : undefined
+        const item = await createInventoryItem({
+          name: row.name.trim(), unitType: row.unitType,
+          minimumStock: 0, averageCost: unitCost ?? 0,
+        })
+        // Stock inicial: establece CPP y cantidad sin afectar el balance de caja.
+        await adjustStock({ inventoryItemId: item.id, movementType: 'OPENING_STOCK', quantity: qty, unitCost })
+      }
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['inventory'] })
+      qc.invalidateQueries({ queryKey: ['expenses'] })
+      setBulkModal(false)
+    },
+    onError: (err: unknown) => {
+      const msg = (err as { response?: { data?: { message?: string } } })?.response?.data?.message
+      setBulkError(msg || (err as Error).message || 'Error al guardar.')
+    },
+  })
+
   const openEdit = (item: InventoryItem) => {
     setForm({
       name: item.name, unitType: item.unitType, minimumStock: item.minimumStock, averageCost: item.averageCost,
       requiresShiftCount: item.requiresShiftCount, containerSize: item.containerSize, containerLabel: item.containerLabel,
       discrepancyTolerancePct: item.discrepancyTolerancePct,
+      shelfLifeDays: item.shelfLifeDays, restockLeadTimeDays: item.restockLeadTimeDays,
     })
-    setCostCalc({ totalPrice: '', totalQty: '', initialStock: '' })
+    setCostCalc({ totalPrice: '', totalQty: '' })
+    setShowInitialStock(false)
     setItemModal({ open: true, item })
   }
 
@@ -191,6 +249,14 @@ export default function Inventory() {
     enabled: isCartView,
   })
 
+  // Perishable analysis (bodega general)
+  const [perishableWindow, setPerishableWindow] = useState(30)
+  const { data: perishableData, isLoading: perishableLoading } = useQuery({
+    queryKey: ['perishable-analysis', perishableWindow],
+    queryFn: () => getPerishableAnalysis(perishableWindow),
+    enabled: !isCartView,
+  })
+
   const selectedCartName = activeCarts.find((c) => c.id === locationCartId)?.name
 
   if (isLoading) return <div className="text-slate-400 text-sm">Cargando...</div>
@@ -221,8 +287,10 @@ export default function Inventory() {
                 <ArrowRightLeft size={15} /> Transferir a PDV
               </button>
               <button
-                onClick={() => { setForm({ name: '', unitType: 'PIECE', minimumStock: 0, averageCost: 0 }); setCostCalc({ totalPrice: '', totalQty: '', initialStock: '' }); setItemModal({ open: true }) }}
-                className="flex items-center gap-2 bg-violet-600 hover:bg-violet-700 text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors">
+                onClick={() => { setForm({ name: '', unitType: 'PIECE', minimumStock: 0, averageCost: 0 }); setCostCalc({ totalPrice: '', totalQty: '' }); setShowInitialStock(false); setItemModal({ open: true }) }}
+                disabled={activeCarts.length === 0}
+                title={activeCarts.length === 0 ? 'Configura tus puntos de venta antes de agregar insumos' : undefined}
+                className="flex items-center gap-2 bg-violet-600 hover:bg-violet-700 disabled:opacity-40 disabled:cursor-not-allowed text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors">
                 <Plus size={16} /> Nuevo insumo
               </button>
             </>
@@ -262,7 +330,14 @@ export default function Inventory() {
                 <p className="font-semibold text-slate-800 text-sm">{item.name}</p>
                 <p className="text-xs text-slate-400">{UNIT_LABELS[item.unitType]}</p>
               </div>
-              {item.belowMinimum && <AlertTriangle size={16} className="text-red-500 shrink-0" />}
+              <div className="flex gap-1 shrink-0">
+                {item.shelfLifeDays != null && (
+                  <span className="text-xs bg-amber-100 text-amber-700 font-medium px-1.5 py-0.5 rounded-full">
+                    {item.shelfLifeDays}d
+                  </span>
+                )}
+                {item.belowMinimum && <AlertTriangle size={16} className="text-red-500" />}
+              </div>
             </div>
             <div className="text-2xl font-bold text-slate-800 mb-1">
               {item.currentStock} <span className="text-sm font-normal text-slate-400">{UNIT_LABELS[item.unitType]}</span>
@@ -270,7 +345,11 @@ export default function Inventory() {
             {isCartView && item.centralStock !== item.currentStock && (
               <p className="text-xs text-slate-400 mb-1">Bodega: {item.centralStock} {UNIT_LABELS[item.unitType]}</p>
             )}
-            <p className="text-xs text-slate-400 mb-3">Mínimo: {item.minimumStock} {UNIT_LABELS[item.unitType]}</p>
+            <p className="text-xs text-slate-400 mb-3">
+              Mínimo: {item.minimumStock > 0
+                ? `${item.minimumStock} ${UNIT_LABELS[item.unitType]}`
+                : <span className="text-violet-500 font-medium">Auto</span>}
+            </p>
             <div className="flex gap-2">
               {!isCartView && (
                 <button onClick={() => { setAdjust({ movementType: 'PURCHASE', quantity: 0, notes: '' }); setAdjustCost({ totalPrice: '', totalQty: '' }); setAdjustModal({ open: true, item }) }}
@@ -298,19 +377,72 @@ export default function Inventory() {
           </div>
         ))}
         {items.length === 0 && (
-          <div className="col-span-full py-6">
+          <div className="col-span-full py-4">
             {!isCartView ? (
-              <div className="bg-amber-50 border border-amber-300 rounded-xl p-4 flex items-start gap-3 max-w-md mx-auto">
-                <div className="w-8 h-8 rounded-full bg-amber-100 flex items-center justify-center shrink-0 mt-0.5">
-                  <AlertTriangle size={16} className="text-amber-600" />
+              activeCarts.length === 0 ? (
+                /* ── Sin PDVs: bloquear bodega ────────────────────────────────── */
+                <div className="bg-slate-50 border border-slate-200 rounded-xl p-5 flex flex-col items-center gap-3 max-w-md mx-auto text-center">
+                  <div className="w-10 h-10 rounded-full bg-slate-100 flex items-center justify-center">
+                    <Warehouse size={20} className="text-slate-400" />
+                  </div>
+                  <div>
+                    <p className="text-sm font-semibold text-slate-700">Configura tus puntos de venta primero</p>
+                    <p className="text-xs text-slate-500 mt-1 leading-relaxed">
+                      Antes de cargar el inventario, agrega todos tus puntos de venta en el menú <strong>PDVs</strong>.
+                      Así podrás organizar desde el inicio qué stock va a cada lugar.
+                    </p>
+                  </div>
                 </div>
-                <div>
-                  <p className="text-sm font-semibold text-amber-800">La bodega está vacía</p>
-                  <p className="text-xs text-amber-700 mt-0.5">
-                    Agrega tus insumos a bodega para poder abastecer tus PDVs, registrar recetas y controlar tu inventario.
-                  </p>
+              ) : (
+                /* ── PDVs OK, bodega vacía: mostrar carga inicial ─────────────── */
+                <div className="space-y-3 max-w-lg mx-auto w-full">
+                  {activeCarts.length > 1 && (
+                    <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 flex items-start gap-3">
+                      <div className="w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center shrink-0 mt-0.5">
+                        <Warehouse size={15} className="text-blue-600" />
+                      </div>
+                      <div>
+                        <p className="text-sm font-semibold text-blue-800">
+                          Tienes {activeCarts.length} puntos de venta
+                        </p>
+                        <p className="text-xs text-blue-700 mt-1 leading-relaxed">
+                          Recomendamos hacer un conteo físico en <strong>cada PDV</strong>, sumar todo y cargarlo aquí en bodega central.
+                          Una vez registrado, usa <strong>Transferir a PDV</strong> para distribuir el stock correctamente.
+                        </p>
+                      </div>
+                    </div>
+                  )}
+                  <div className="bg-amber-50 border border-amber-300 rounded-xl p-4 space-y-3">
+                    <div className="flex items-start gap-3">
+                      <div className="w-8 h-8 rounded-full bg-amber-100 flex items-center justify-center shrink-0 mt-0.5">
+                        <AlertTriangle size={16} className="text-amber-600" />
+                      </div>
+                      <div>
+                        <p className="text-sm font-semibold text-amber-800">La bodega está vacía</p>
+                        <p className="text-xs text-amber-700 mt-0.5 leading-relaxed">
+                          ¿Ya tienes insumos en existencia? Carga todo tu inventario actual de una vez para que el sistema conozca tu capital desde el primer día y puedas hacer transferencias correctas a tus PDVs.
+                        </p>
+                      </div>
+                    </div>
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => {
+                          setBulkRows([{ id: Date.now(), name: '', unitType: 'PIECE', qty: '', price: '' }])
+                          setBulkError('')
+                          setBulkModal(true)
+                        }}
+                        className="flex-1 flex items-center justify-center gap-2 bg-amber-600 hover:bg-amber-700 text-white text-sm font-semibold py-2.5 rounded-xl transition-colors">
+                        <PackagePlus size={16} /> Cargar inventario inicial
+                      </button>
+                      <button
+                        onClick={() => { setForm({ name: '', unitType: 'PIECE', minimumStock: 0, averageCost: 0 }); setCostCalc({ totalPrice: '', totalQty: '' }); setShowInitialStock(false); setItemModal({ open: true }) }}
+                        className="border border-amber-400 text-amber-700 hover:bg-amber-100 text-sm font-medium py-2.5 px-4 rounded-xl transition-colors whitespace-nowrap">
+                        + Uno a la vez
+                      </button>
+                    </div>
+                  </div>
                 </div>
-              </div>
+              )
             ) : (
               <p className="text-slate-400 text-sm text-center">Sin stock transferido a este PDV.</p>
             )}
@@ -409,6 +541,103 @@ export default function Inventory() {
             <p className="text-xs text-slate-400">
               Basado en el promedio de consumo de los últimos <strong>{analysisWindow} días</strong>.
               Crítico &lt; 1 día · Bajo &lt; 3 días.
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* ── Perishable analysis (bodega general only) ────────────────────────── */}
+      {!isCartView && perishableData && perishableData.items.length > 0 && (
+        <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+          <div className="flex items-center justify-between px-5 py-3 border-b border-slate-100">
+            <div className="flex items-center gap-2">
+              <AlertTriangle size={16} className="text-amber-500" />
+              <h3 className="font-semibold text-slate-800 text-sm">Análisis de perecederos</h3>
+            </div>
+            <div className="flex gap-1">
+              {[7, 14, 30].map((d) => (
+                <button key={d} onClick={() => setPerishableWindow(d)}
+                  className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-colors ${
+                    perishableWindow === d ? 'bg-amber-500 text-white' : 'text-slate-500 hover:bg-slate-100'
+                  }`}>{d}d</button>
+              ))}
+            </div>
+          </div>
+
+          {perishableLoading ? (
+            <p className="text-slate-400 text-sm text-center py-6">Calculando...</p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-xs text-slate-400 border-b border-slate-100">
+                    <th className="text-left px-5 py-2 font-medium">Insumo</th>
+                    <th className="text-right px-3 py-2 font-medium">Stock</th>
+                    <th className="text-right px-3 py-2 font-medium">Cons./día</th>
+                    <th className="text-right px-3 py-2 font-medium">Días</th>
+                    <th className="text-right px-3 py-2 font-medium">Mín. sug.</th>
+                    <th className="text-right px-3 py-2 font-medium">Máx. sug.</th>
+                    <th className="px-3 py-2"></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {perishableData.items.map((item: PerishableItemAnalysis) => {
+                    const u = item.unitType === 'GRAM' ? 'g' : item.unitType === 'MILLILITER' ? 'ml' : 'pza'
+                    const cfg = {
+                      CRITICAL: { label: 'Crítico',     bg: 'bg-red-100',    text: 'text-red-700',    row: 'bg-red-50/40' },
+                      LOW:      { label: 'Pedir pronto', bg: 'bg-amber-100',  text: 'text-amber-700',  row: 'bg-amber-50/40' },
+                      EXCESS:   { label: 'Exceso',       bg: 'bg-purple-100', text: 'text-purple-700', row: 'bg-purple-50/20' },
+                      OK:       { label: 'OK',           bg: 'bg-green-100',  text: 'text-green-700',  row: '' },
+                      NO_DATA:  { label: 'Sin datos',    bg: 'bg-slate-100',  text: 'text-slate-500',  row: '' },
+                    }[item.status] ?? { label: item.status, bg: 'bg-slate-100', text: 'text-slate-500', row: '' }
+                    return (
+                      <tr key={item.inventoryItemId} className={`border-b border-slate-100 last:border-0 ${cfg.row}`}>
+                        <td className="px-5 py-3">
+                          <p className="font-medium text-slate-800">{item.name}</p>
+                          <p className="text-xs text-slate-400">vida útil: {item.shelfLifeDays}d · proveedor: {item.restockLeadTimeDays}d</p>
+                        </td>
+                        <td className="px-3 py-3 text-right text-slate-700 whitespace-nowrap">
+                          {item.currentStock.toFixed(2)} <span className="text-slate-400">{u}</span>
+                        </td>
+                        <td className="px-3 py-3 text-right text-slate-500 whitespace-nowrap">
+                          {item.avgDailyConsumption > 0
+                            ? <>{item.avgDailyConsumption.toFixed(2)} <span className="text-slate-400">{u}</span></>
+                            : <span className="text-slate-300">—</span>}
+                        </td>
+                        <td className="px-3 py-3 text-right font-semibold whitespace-nowrap">
+                          {item.estimatedDaysRemaining !== null
+                            ? <span className={item.status === 'CRITICAL' ? 'text-red-600' : item.status === 'LOW' ? 'text-amber-600' : item.status === 'EXCESS' ? 'text-purple-600' : 'text-slate-700'}>
+                                {item.estimatedDaysRemaining.toFixed(1)}d
+                              </span>
+                            : <span className="text-slate-300">—</span>}
+                        </td>
+                        <td className="px-3 py-3 text-right text-slate-600 whitespace-nowrap">
+                          {item.suggestedMinStock !== null
+                            ? <>{item.suggestedMinStock.toFixed(1)} <span className="text-slate-400">{u}</span></>
+                            : <span className="text-slate-300">—</span>}
+                        </td>
+                        <td className="px-3 py-3 text-right text-slate-600 whitespace-nowrap">
+                          {item.suggestedMaxStock !== null
+                            ? <>{item.suggestedMaxStock.toFixed(1)} <span className="text-slate-400">{u}</span></>
+                            : <span className="text-slate-300">—</span>}
+                        </td>
+                        <td className="px-3 py-3">
+                          <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-medium ${cfg.bg} ${cfg.text}`}>
+                            {cfg.label}
+                          </span>
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          <div className="px-5 py-2 bg-slate-50 border-t border-slate-100">
+            <p className="text-xs text-slate-400">
+              Consumo promedio de los últimos <strong>{perishableWindow} días</strong> (ventas + elaboraciones).
+              Crítico = se acaba antes del proveedor · Exceso = riesgo de desperdicio.
             </p>
           </div>
         </div>
@@ -529,70 +758,140 @@ export default function Inventory() {
                 )}
               </div>
 
-              {/* Calculadora de costo */}
-              <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 space-y-2.5">
-                <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Costo de compra</p>
-                <div className="grid grid-cols-2 gap-2">
-                  <div>
-                    <label className="text-xs text-slate-500 block mb-1">Precio total pagado $</label>
-                    <input type="number" min={0} step="0.01"
-                      value={costCalc.totalPrice}
-                      onChange={(e) => handleCostCalc('totalPrice', e.target.value)}
-                      placeholder="ej. 160.00"
-                      className="w-full border border-slate-300 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:border-violet-500" />
-                  </div>
-                  <div>
-                    <label className="text-xs text-slate-500 block mb-1">
-                      Cantidad comprada ({UNIT_LABELS[form.unitType]})
-                    </label>
-                    <input type="number" min={0} step="1"
-                      value={costCalc.totalQty}
-                      onChange={(e) => handleCostCalc('totalQty', e.target.value)}
-                      placeholder={form.unitType === 'GRAM' ? 'ej. 1200' : form.unitType === 'MILLILITER' ? 'ej. 1000' : 'ej. 1'}
-                      className="w-full border border-slate-300 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:border-violet-500" />
+              {!itemModal.item ? (
+                /* ── CREAR: stock inicial + costo unificado (A+B) ─────────────── */
+                <div className="space-y-3">
+                  {withinOnboardingPeriod && (
+                    <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 space-y-2.5">
+                      <label className="flex items-center gap-2.5 cursor-pointer select-none">
+                        <input
+                          type="checkbox"
+                          checked={showInitialStock}
+                          onChange={(e) => {
+                            setShowInitialStock(e.target.checked)
+                            if (!e.target.checked) setCostCalc({ totalPrice: '', totalQty: '' })
+                          }}
+                          className="w-4 h-4 rounded accent-violet-600"
+                        />
+                        <span className="text-xs font-semibold text-slate-600 uppercase tracking-wide">¿Ya tienes stock de este insumo?</span>
+                      </label>
+
+                      {showInitialStock && (
+                        <>
+                          <p className="text-xs text-slate-400">Indica cuánto tienes y cuánto pagaste para establecer el costo desde el primer día. No afecta el saldo de caja.</p>
+                          <div className="grid grid-cols-2 gap-2">
+                            <div>
+                              <label className="text-xs text-slate-500 block mb-1">
+                                Cantidad ({UNIT_LABELS[form.unitType]})
+                              </label>
+                              <input type="number" min={0} step="0.001"
+                                value={costCalc.totalQty}
+                                onChange={(e) => handleCostCalc('totalQty', e.target.value)}
+                                placeholder={form.unitType === 'GRAM' ? 'ej. 1200' : form.unitType === 'MILLILITER' ? 'ej. 1000' : 'ej. 1'}
+                                className="w-full border border-slate-300 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:border-violet-500" />
+                            </div>
+                            <div>
+                              <label className="text-xs text-slate-500 block mb-1">Precio total pagado $</label>
+                              <input type="number" min={0} step="0.01"
+                                value={costCalc.totalPrice}
+                                onChange={(e) => handleCostCalc('totalPrice', e.target.value)}
+                                placeholder="ej. 160.00"
+                                className="w-full border border-slate-300 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:border-violet-500" />
+                            </div>
+                          </div>
+                          {(() => {
+                            const qty = parseFloat(costCalc.totalQty)
+                            const paid = parseFloat(costCalc.totalPrice)
+                            if (qty > 0 && calcUnitCost !== null) {
+                              return (
+                                <div className="space-y-1.5">
+                                  <div className="flex items-center justify-between bg-violet-50 border border-violet-200 rounded-lg px-3 py-2">
+                                    <span className="text-xs text-violet-700">CPP inicial (costo/{UNIT_LABELS[form.unitType]})</span>
+                                    <span className="text-sm font-bold text-violet-700">${calcUnitCost.toFixed(4)}</span>
+                                  </div>
+                                  <div className="flex items-center justify-between bg-blue-50 border border-blue-200 rounded-lg px-3 py-2">
+                                    <span className="text-xs text-blue-700">Valor en inventario (no afecta caja)</span>
+                                    <span className="text-sm font-bold text-blue-700">${paid.toFixed(2)}</span>
+                                  </div>
+                                </div>
+                              )
+                            }
+                            if (qty > 0) {
+                              return (
+                                <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                                  Ingresa el precio pagado para calcular el costo unitario automáticamente.
+                                </p>
+                              )
+                            }
+                            return null
+                          })()}
+                        </>
+                      )}
+                    </div>
+                  )}
+                  <div className="flex items-start gap-3 bg-violet-50 border border-violet-200 rounded-xl px-4 py-3">
+                    <span className="text-lg shrink-0">🧠</span>
+                    <div>
+                      <p className="text-sm font-semibold text-violet-800">El sistema calculará el mínimo automáticamente</p>
+                      <p className="text-xs text-violet-700 mt-0.5 leading-relaxed">
+                        Después de 30 días de ventas y elaboraciones, el sistema analizará el consumo real de este insumo
+                        y calculará el stock mínimo óptimo — sin que tengas que hacer nada.
+                      </p>
+                    </div>
                   </div>
                 </div>
-                {calcUnitCost !== null ? (
-                  <div className="flex items-center justify-between bg-violet-50 border border-violet-200 rounded-lg px-3 py-2">
-                    <span className="text-xs text-violet-700">Costo por {UNIT_LABELS[form.unitType]}</span>
-                    <span className="text-sm font-bold text-violet-700">${calcUnitCost.toFixed(4)}</span>
+              ) : (
+                /* ── EDITAR: calculadora de costo + override mínimo ───────────── */
+                <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 space-y-2.5">
+                  <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Costo de compra</p>
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="text-xs text-slate-500 block mb-1">Precio total pagado $</label>
+                      <input type="number" min={0} step="0.01"
+                        value={costCalc.totalPrice}
+                        onChange={(e) => handleCostCalc('totalPrice', e.target.value)}
+                        placeholder="ej. 160.00"
+                        className="w-full border border-slate-300 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:border-violet-500" />
+                    </div>
+                    <div>
+                      <label className="text-xs text-slate-500 block mb-1">
+                        Cantidad comprada ({UNIT_LABELS[form.unitType]})
+                      </label>
+                      <input type="number" min={0} step="1"
+                        value={costCalc.totalQty}
+                        onChange={(e) => handleCostCalc('totalQty', e.target.value)}
+                        placeholder={form.unitType === 'GRAM' ? 'ej. 1200' : form.unitType === 'MILLILITER' ? 'ej. 1000' : 'ej. 1'}
+                        className="w-full border border-slate-300 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:border-violet-500" />
+                    </div>
                   </div>
-                ) : (
-                  <div>
+                  {calcUnitCost !== null ? (
+                    <div className="flex items-center justify-between bg-violet-50 border border-violet-200 rounded-lg px-3 py-2">
+                      <span className="text-xs text-violet-700">Costo por {UNIT_LABELS[form.unitType]}</span>
+                      <span className="text-sm font-bold text-violet-700">${calcUnitCost.toFixed(4)}</span>
+                    </div>
+                  ) : (
                     <p className="text-xs text-slate-400">
-                      {itemModal.item
-                        ? <>Costo actual: <strong>${form.averageCost.toFixed(4)}/{UNIT_LABELS[form.unitType]}</strong>. Rellena los campos para recalcular.</>
-                        : 'Ingresa el precio y la cantidad para calcular el costo por unidad automáticamente.'}
+                      Costo actual: <strong>${form.averageCost.toFixed(4)}/{UNIT_LABELS[form.unitType]}</strong>. Rellena los campos para recalcular.
                     </p>
-                  </div>
-                )}
-              </div>
+                  )}
+                </div>
+              )}
 
-              <div className="grid grid-cols-2 gap-3">
+              {itemModal.item && (
+                /* ── EDITAR: override manual ──────────────────────────────────── */
                 <div>
                   <label className="text-sm font-medium text-slate-700 block mb-1">
-                    Stock mínimo ({UNIT_LABELS[form.unitType]})
+                    Override de mínimo ({UNIT_LABELS[form.unitType]})
                   </label>
                   <input type="number" min={0} value={form.minimumStock}
                     onChange={(e) => setForm({ ...form, minimumStock: parseFloat(e.target.value) })}
                     placeholder="0"
                     className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-violet-500" />
-                  <p className="text-xs text-slate-400 mt-1">Alerta cuando baje de este nivel.</p>
+                  <p className="text-xs text-slate-400 mt-1">
+                    El sistema lo calcula automáticamente. Solo ajusta si sabes algo que el sistema no — por ejemplo, una temporada especial.
+                  </p>
                 </div>
-                {!itemModal.item && (
-                  <div>
-                    <label className="text-sm font-medium text-slate-700 block mb-1">
-                      Stock actual ({UNIT_LABELS[form.unitType]})
-                    </label>
-                    <input type="number" min={0} step="0.001"
-                      value={costCalc.initialStock}
-                      onChange={(e) => setCostCalc(c => ({ ...c, initialStock: e.target.value }))}
-                      placeholder="0"
-                      className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-violet-500" />
-                    <p className="text-xs text-slate-400 mt-1">¿Cuánto tienes ahora?</p>
-                  </div>
-                )}
-              </div>
+              )}
             </div>
 
             {/* ── Presentación / Envase ─────────────────────────────────────── */}
@@ -626,8 +925,52 @@ export default function Inventory() {
               </div>
               {form.containerSize && form.containerLabel && (
                 <p className="text-xs text-teal-700 bg-teal-50 border border-teal-200 rounded-lg px-3 py-1.5">
-                  Los sugeridos de resurtido se calcularán en <strong>{form.containerLabel}s de {form.containerSize} {form.unitType === 'PIECE' ? 'pzas' : form.unitType === 'GRAM' ? 'g' : 'ml'}</strong>.
+                  Los sugeridos de resurtido se calcularán en <strong>{form.containerLabel} de {form.containerSize} {form.unitType === 'PIECE' ? 'pzas' : form.unitType === 'GRAM' ? 'g' : 'ml'}</strong>.
                 </p>
+              )}
+            </div>
+
+            {/* ── Perecedero ────────────────────────────────────────────────── */}
+            <div className="border-t border-slate-100 pt-4 space-y-3">
+              <label className="flex items-center gap-2.5 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={form.shelfLifeDays !== undefined}
+                  onChange={(e) => {
+                    if (e.target.checked) {
+                      setForm({ ...form, shelfLifeDays: 1, restockLeadTimeDays: 1 })
+                    } else {
+                      setForm({ ...form, shelfLifeDays: undefined, restockLeadTimeDays: undefined })
+                    }
+                  }}
+                  className="w-4 h-4 rounded accent-violet-600"
+                />
+                <span className="text-sm font-semibold text-slate-700">Perecedero</span>
+              </label>
+
+              {form.shelfLifeDays !== undefined && (
+                <>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="text-xs text-slate-500 block mb-1">Vida útil (días)</label>
+                      <input type="number" min={1} step={1}
+                        value={form.shelfLifeDays}
+                        onChange={(e) => setForm({ ...form, shelfLifeDays: e.target.value ? parseInt(e.target.value) : 1 })}
+                        className="w-full border border-slate-300 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:border-violet-500" />
+                    </div>
+                    <div>
+                      <label className="text-xs text-slate-500 block mb-1">Días proveedor</label>
+                      <p className="text-xs text-slate-400 mb-1">¿Cuántos días tarda tu proveedor en surtir este insumo?</p>
+                      <input type="number" min={1} step={1}
+                        value={form.restockLeadTimeDays ?? 1}
+                        onChange={(e) => setForm({ ...form, restockLeadTimeDays: e.target.value ? parseInt(e.target.value) : 1 })}
+                        className="w-full border border-slate-300 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:border-violet-500" />
+                    </div>
+                  </div>
+                  <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                    Con estos datos el sistema calculará tu mínimo y máximo sugerido usando el consumo promedio de los últimos 30 días.
+                  </p>
+                </>
               )}
             </div>
 
@@ -895,6 +1238,129 @@ export default function Inventory() {
                   }
                   className="flex-1 bg-slate-700 hover:bg-slate-800 disabled:opacity-50 text-white text-sm font-semibold py-2 rounded-lg">
                   {reconcileMut.isPending ? 'Guardando...' : 'Guardar toma de inventario'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Bulk initial load modal ──────────────────────────────────────────── */}
+      {bulkModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50">
+          <div className="bg-white rounded-2xl w-full max-w-xl shadow-xl flex flex-col max-h-[92vh]">
+            {/* Header */}
+            <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100">
+              <div className="flex items-center gap-2">
+                <PackagePlus size={18} className="text-amber-600" />
+                <div>
+                  <h3 className="font-bold text-slate-800">Carga inicial de inventario</h3>
+                  <p className="text-xs text-slate-400">Agrega todos tus insumos y sus costos de una sola vez</p>
+                </div>
+              </div>
+              <button onClick={() => setBulkModal(false)}><X size={20} className="text-slate-400" /></button>
+            </div>
+
+            {/* Info tip */}
+            <div className="px-5 py-2.5 bg-amber-50 border-b border-amber-100">
+              <p className="text-xs text-amber-800">
+                Usá este flujo para inventario que <strong>ya tenías antes de adoptar el ERP</strong>.
+                El precio establece el costo promedio pero <strong>no descuenta de tu caja</strong> —
+                el valor aparece como "Inventario en stock" en el desglose patrimonial.
+              </p>
+            </div>
+
+            {/* Rows */}
+            <div className="overflow-y-auto flex-1 px-5 py-4 space-y-3">
+              {bulkRows.map((row, idx) => (
+                <div key={row.id} className="bg-slate-50 border border-slate-200 rounded-xl p-3 space-y-2">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-semibold text-slate-400 w-5 shrink-0">#{idx + 1}</span>
+                    <input
+                      type="text"
+                      value={row.name}
+                      onChange={(e) => setBulkRows(r => r.map(x => x.id === row.id ? { ...x, name: e.target.value } : x))}
+                      placeholder="Nombre del insumo"
+                      className="flex-1 border border-slate-300 rounded-lg px-2.5 py-1.5 text-sm focus:outline-none focus:border-violet-500"
+                    />
+                    <button
+                      onClick={() => setBulkRows(r => r.filter(x => x.id !== row.id))}
+                      className="text-slate-300 hover:text-red-400 transition-colors shrink-0">
+                      <X size={16} />
+                    </button>
+                  </div>
+                  <div className="grid grid-cols-3 gap-2 pl-7">
+                    <div>
+                      <label className="text-xs text-slate-400 block mb-1">Unidad</label>
+                      <select
+                        value={row.unitType}
+                        onChange={(e) => setBulkRows(r => r.map(x => x.id === row.id ? { ...x, unitType: e.target.value as UnitType } : x))}
+                        className="w-full border border-slate-300 rounded-lg px-2 py-1.5 text-xs focus:outline-none focus:border-violet-500">
+                        <option value="PIECE">pza</option>
+                        <option value="GRAM">g</option>
+                        <option value="MILLILITER">ml</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="text-xs text-slate-400 block mb-1">Cantidad</label>
+                      <input
+                        type="number" min={0} step="0.001"
+                        value={row.qty}
+                        onChange={(e) => setBulkRows(r => r.map(x => x.id === row.id ? { ...x, qty: e.target.value } : x))}
+                        placeholder="0"
+                        className="w-full border border-slate-300 rounded-lg px-2 py-1.5 text-sm text-right focus:outline-none focus:border-violet-500"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-xs text-slate-400 block mb-1">Precio total $</label>
+                      <input
+                        type="number" min={0} step="0.01"
+                        value={row.price}
+                        onChange={(e) => setBulkRows(r => r.map(x => x.id === row.id ? { ...x, price: e.target.value } : x))}
+                        placeholder="0.00"
+                        className="w-full border border-slate-300 rounded-lg px-2 py-1.5 text-sm text-right focus:outline-none focus:border-violet-500"
+                      />
+                    </div>
+                  </div>
+                  {parseFloat(row.qty) > 0 && parseFloat(row.price) > 0 && (
+                    <p className="text-xs text-violet-600 pl-7">
+                      CPP: ${(parseFloat(row.price) / parseFloat(row.qty)).toFixed(4)}/{UNIT_LABELS[row.unitType]}
+                      · Gasto: ${parseFloat(row.price).toFixed(2)}
+                    </p>
+                  )}
+                </div>
+              ))}
+              <button
+                onClick={() => setBulkRows(r => [...r, { id: Date.now(), name: '', unitType: 'PIECE', qty: '', price: '' }])}
+                className="w-full border-2 border-dashed border-slate-300 hover:border-violet-400 text-slate-400 hover:text-violet-600 text-sm py-2.5 rounded-xl transition-colors">
+                + Agregar insumo
+              </button>
+            </div>
+
+            {/* Footer */}
+            <div className="px-5 py-4 border-t border-slate-100 space-y-3">
+              {(() => {
+                const total = bulkRows.reduce((s, r) => s + (parseFloat(r.price) || 0), 0)
+                const count = bulkRows.filter(r => r.name.trim() && parseFloat(r.qty) > 0).length
+                if (count === 0) return null
+                return (
+                  <div className="flex items-center justify-between bg-emerald-50 border border-emerald-200 rounded-xl px-4 py-2.5">
+                    <span className="text-sm text-emerald-700">{count} insumo{count !== 1 ? 's' : ''} · Gasto total a registrar</span>
+                    <span className="text-base font-bold text-emerald-700">${total.toFixed(2)}</span>
+                  </div>
+                )
+              })()}
+              {bulkError && <p className="text-red-500 text-sm">{bulkError}</p>}
+              <div className="flex gap-3">
+                <button onClick={() => setBulkModal(false)}
+                  className="flex-1 border border-slate-300 text-slate-700 text-sm py-2 rounded-lg hover:bg-slate-50">
+                  Cancelar
+                </button>
+                <button
+                  onClick={() => bulkMut.mutate()}
+                  disabled={bulkMut.isPending || bulkRows.filter(r => r.name.trim() && parseFloat(r.qty) > 0).length === 0}
+                  className="flex-1 bg-amber-600 hover:bg-amber-700 disabled:opacity-50 text-white text-sm font-semibold py-2 rounded-lg">
+                  {bulkMut.isPending ? 'Guardando...' : 'Guardar inventario inicial'}
                 </button>
               </div>
             </div>

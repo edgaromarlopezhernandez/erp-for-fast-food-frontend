@@ -284,7 +284,7 @@ export default function Recipes() {
 
   return (
     <div className="space-y-4">
-      <h2 className="text-xl font-bold text-slate-800">Recetas</h2>
+      <h2 className="text-xl font-bold text-slate-800">Composición de productos</h2>
       <p className="text-slate-500 text-sm">Configura insumos base y extras opcionales de cada producto.</p>
 
       {inventory.length === 0 && (
