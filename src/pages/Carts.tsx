@@ -161,9 +161,21 @@ export default function Carts() {
           </div>
         ))}
         {active.length === 0 && (
-          <p className="text-slate-400 text-sm col-span-full py-8 text-center">
-            No hay PDVs activos. Crea uno para empezar a registrar ventas.
-          </p>
+          <div className="col-span-full">
+            <div className="bg-amber-50 border border-amber-300 rounded-xl p-4 flex items-start gap-3 max-w-lg">
+              <div className="w-8 h-8 rounded-full bg-amber-100 flex items-center justify-center shrink-0 mt-0.5">
+                <AlertTriangle size={16} className="text-amber-600" />
+              </div>
+              <div>
+                <p className="text-sm font-semibold text-amber-800">Agrega todos tus puntos de venta de una sola vez</p>
+                <p className="text-xs text-amber-700 mt-1 leading-relaxed">
+                  Si haces la carga incompleta el sistema no funcionará al 100%, ya que los PDVs son la base para calcular
+                  reportes por ubicación, transferencias de inventario, análisis de consumo y cierres de turno.
+                  Tómate unos minutos para agregar todos los que operas antes de continuar.
+                </p>
+              </div>
+            </div>
+          </div>
         )}
       </div>
 

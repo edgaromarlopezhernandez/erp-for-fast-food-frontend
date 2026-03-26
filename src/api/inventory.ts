@@ -1,5 +1,5 @@
 import client from './client'
-import type { InventoryItem, InventoryItemRequest, InventoryMovement, StockAdjustmentRequest } from '../types'
+import type { InventoryItem, InventoryItemRequest, InventoryMovement, StockAdjustmentRequest, PerishableAnalysisResponse } from '../types'
 
 export interface TransferLine { inventoryItemId: number; quantity: number }
 export interface TransferToCartRequest { cartId: number; items: TransferLine[]; notes?: string }
@@ -52,3 +52,8 @@ export interface ReconcileRequest { items: ReconcileItem[]; notes?: string }
 
 export const reconcileStock = (data: ReconcileRequest) =>
   client.post<import('../types').InventoryItem[]>('/api/inventory/reconcile', data).then((r) => r.data)
+
+export const getPerishableAnalysis = (windowDays = 30) =>
+  client.get<PerishableAnalysisResponse>('/api/inventory/perishable-analysis', {
+    params: { windowDays },
+  }).then((r) => r.data)

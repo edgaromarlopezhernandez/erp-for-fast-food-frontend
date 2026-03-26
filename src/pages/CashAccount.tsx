@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   Wallet, TrendingUp, TrendingDown, Plus, Pencil, Trash2,
-  X, Save, AlertTriangle, CheckCircle, ArrowDownCircle
+  X, Save, AlertTriangle, CheckCircle, ArrowDownCircle, Package
 } from 'lucide-react'
 import {
   getCashAccount,
@@ -63,7 +63,6 @@ export default function CashAccount() {
   const [showWithdrawalModal, setShowWithdrawalModal] = useState(false)
   const [withdrawalForm, setWithdrawalForm] = useState<Partial<WithdrawalRequest>>({
     category: 'OWNER_PROFIT',
-    withdrawalDate: new Date().toISOString().split('T')[0],
   })
 
   const createWithdrawalMutation = useMutation({
@@ -71,7 +70,7 @@ export default function CashAccount() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['cash-account'] })
       setShowWithdrawalModal(false)
-      setWithdrawalForm({ category: 'OWNER_PROFIT', withdrawalDate: new Date().toISOString().split('T')[0] })
+      setWithdrawalForm({ category: 'OWNER_PROFIT' })
     },
   })
 
@@ -94,7 +93,6 @@ export default function CashAccount() {
   const [showDepositModal, setShowDepositModal] = useState(false)
   const [depositForm, setDepositForm] = useState<Partial<CashDepositRequest>>({
     category: 'OWNER_INJECTION',
-    depositDate: new Date().toISOString().split('T')[0],
   })
 
   const createDepositMutation = useMutation({
@@ -102,7 +100,7 @@ export default function CashAccount() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['cash-account'] })
       setShowDepositModal(false)
-      setDepositForm({ category: 'OWNER_INJECTION', depositDate: new Date().toISOString().split('T')[0] })
+      setDepositForm({ category: 'OWNER_INJECTION' })
     },
   })
 
@@ -168,13 +166,46 @@ export default function CashAccount() {
 
       {/* Balance card */}
       <div className={`rounded-2xl p-6 text-white ${isPositive ? 'bg-emerald-600' : 'bg-red-600'}`}>
-        <div className="text-sm font-medium opacity-80 mb-1">Saldo actual</div>
+        <div className="text-sm font-medium opacity-80 mb-1">Capital líquido</div>
         <div className="text-4xl font-bold tracking-tight">{fmt(data.currentBalance)}</div>
         <div className="flex items-center gap-1.5 mt-2 text-sm opacity-80">
           {isPositive
             ? <><CheckCircle size={16} /> Balance positivo</>
             : <><AlertTriangle size={16} /> Balance negativo</>
           }
+        </div>
+      </div>
+
+      {/* Patrimony breakdown */}
+      <div className="bg-white rounded-xl border border-slate-200 p-4 space-y-3">
+        <h2 className="text-xs font-semibold text-slate-500 uppercase tracking-wide">
+          Desglose patrimonial
+        </h2>
+        <div className="space-y-2">
+          <div className="flex justify-between items-center">
+            <span className="text-sm text-slate-600 flex items-center gap-1.5">
+              <Wallet size={14} className="text-slate-400" />
+              Capital líquido
+            </span>
+            <span className={`text-sm font-semibold ${data.currentBalance >= 0 ? 'text-emerald-700' : 'text-red-600'}`}>
+              {fmt(data.currentBalance)}
+            </span>
+          </div>
+          <div className="flex justify-between items-center">
+            <span className="text-sm text-slate-600 flex items-center gap-1.5">
+              <Package size={14} className="text-slate-400" />
+              Inventario en stock
+            </span>
+            <span className="text-sm font-semibold text-blue-700">
+              {fmt(data.inventoryValue)}
+            </span>
+          </div>
+          <div className="border-t border-slate-100 pt-2 flex justify-between items-center">
+            <span className="text-sm font-bold text-slate-800">Patrimonio total</span>
+            <span className={`text-base font-bold ${data.totalPatrimony >= 0 ? 'text-slate-800' : 'text-red-600'}`}>
+              {fmt(data.totalPatrimony)}
+            </span>
+          </div>
         </div>
       </div>
 
@@ -395,14 +426,9 @@ export default function CashAccount() {
                 />
               </div>
 
-              <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1">Fecha</label>
-                <input
-                  type="date"
-                  value={depositForm.depositDate ?? ''}
-                  onChange={e => setDepositForm(f => ({ ...f, depositDate: e.target.value }))}
-                  className="w-full border border-slate-300 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                />
+              <div className="flex items-center gap-1.5 text-xs text-slate-400 bg-slate-50 rounded-lg px-3 py-2">
+                <CheckCircle size={13} className="text-slate-400 shrink-0" />
+                Fecha registrada automáticamente por el sistema: <span className="font-medium text-slate-600">{new Date().toLocaleString('es-MX', { dateStyle: 'medium', timeStyle: 'short' })}</span>
               </div>
 
               <div>
@@ -479,14 +505,9 @@ export default function CashAccount() {
                 />
               </div>
 
-              <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1">Fecha</label>
-                <input
-                  type="date"
-                  value={withdrawalForm.withdrawalDate ?? ''}
-                  onChange={e => setWithdrawalForm(f => ({ ...f, withdrawalDate: e.target.value }))}
-                  className="w-full border border-slate-300 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500"
-                />
+              <div className="flex items-center gap-1.5 text-xs text-slate-400 bg-slate-50 rounded-lg px-3 py-2">
+                <CheckCircle size={13} className="text-slate-400 shrink-0" />
+                Fecha registrada automáticamente por el sistema: <span className="font-medium text-slate-600">{new Date().toLocaleString('es-MX', { dateStyle: 'medium', timeStyle: 'short' })}</span>
               </div>
 
               <div>

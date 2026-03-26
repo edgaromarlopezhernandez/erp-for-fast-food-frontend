@@ -1,5 +1,5 @@
 import client from './client'
-import type { CashAccount, WithdrawalRequest, WithdrawalResponse, CashDepositRequest, CashDepositResponse } from '../types'
+import type { CashAccount, GeneralCashRegisterResponse, WithdrawalRequest, WithdrawalResponse, CashDepositRequest, CashDepositResponse } from '../types'
 
 export const getCashAccount = () =>
   client.get<CashAccount>('/api/cash-account').then(r => r.data)
@@ -18,3 +18,6 @@ export const createDeposit = (data: CashDepositRequest) =>
 
 export const deleteDeposit = (id: number) =>
   client.delete(`/api/cash-account/deposits/${id}`).then(r => r.data)
+
+export const getGeneralRegister = () =>
+  client.get<GeneralCashRegisterResponse>('/api/cash-account/general-register').then(r => r.data)

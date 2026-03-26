@@ -78,6 +78,8 @@ export interface InventoryItem {
   containerSize?: number
   containerLabel?: string
   discrepancyTolerancePct?: number
+  shelfLifeDays?: number
+  restockLeadTimeDays?: number
 }
 export interface InventoryItemRequest {
   name: string; unitType: UnitType; minimumStock: number; averageCost: number
@@ -85,6 +87,28 @@ export interface InventoryItemRequest {
   containerSize?: number
   containerLabel?: string
   discrepancyTolerancePct?: number
+  shelfLifeDays?: number
+  restockLeadTimeDays?: number
+}
+
+// ── Perishable Analysis ────────────────────────────────────────────────────────
+export type PerishableStatus = 'CRITICAL' | 'LOW' | 'OK' | 'EXCESS' | 'NO_DATA'
+export interface PerishableItemAnalysis {
+  inventoryItemId: number
+  name: string
+  unitType: string
+  currentStock: number
+  shelfLifeDays: number
+  restockLeadTimeDays: number
+  avgDailyConsumption: number
+  estimatedDaysRemaining: number | null
+  suggestedMinStock: number | null
+  suggestedMaxStock: number | null
+  status: PerishableStatus
+}
+export interface PerishableAnalysisResponse {
+  windowDays: number
+  items: PerishableItemAnalysis[]
 }
 
 // ── Shift inventory count ──────────────────────────────────────────────────────
@@ -581,6 +605,10 @@ export interface CashDepositRequest {
   amount: number; depositDate?: string; category: DepositCategory; notes?: string
 }
 
+export interface GeneralCashRegisterResponse {
+  balance: number
+}
+
 export interface CashAccount {
   initialCapital: number
   totalSalesIncome: number
@@ -590,6 +618,8 @@ export interface CashAccount {
   totalPayrollOut: number
   totalWithdrawalsOut: number
   currentBalance: number
+  inventoryValue: number
+  totalPatrimony: number
   recentWithdrawals: WithdrawalResponse[]
   recentDeposits: CashDepositResponse[]
 }
@@ -634,4 +664,40 @@ export interface ProductionRequest {
   notes?: string
   producedAt?: string
   ingredients: ProductionIngredientRequest[]
+}
+
+// ── Production Templates ───────────────────────────────────────────────────────
+export interface ProductionTemplateIngredientResponse {
+  id: number
+  inventoryItemId: number
+  inventoryItemName: string
+  unitType: string
+  quantity: number
+}
+
+export interface ProductionTemplateResponse {
+  id: number
+  name: string
+  outputItemId: number
+  outputItemName: string
+  outputItemUnit: string
+  baseYield: number
+  baseYieldUnit: string
+  preparationInstructions?: string
+  active: boolean
+  ingredients: ProductionTemplateIngredientResponse[]
+}
+
+export interface ProductionTemplateIngredientRequest {
+  inventoryItemId: number
+  quantity: number
+}
+
+export interface ProductionTemplateRequest {
+  name: string
+  outputItemId: number
+  baseYield: number
+  baseYieldUnit: string
+  preparationInstructions?: string
+  ingredients: ProductionTemplateIngredientRequest[]
 }
