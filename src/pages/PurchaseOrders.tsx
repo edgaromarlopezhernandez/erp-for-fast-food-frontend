@@ -855,10 +855,12 @@ export default function PurchaseOrders() {
       {/* ── Quick-confirm modal ────────────────────────────────────────────── */}
       {quickConfirmOrder && (() => {
         const fmt2 = (n: number) => n.toLocaleString('es-MX', { style: 'currency', currency: 'MXN' })
-        const noPrices    = quickConfirmOrder.totalAmount === 0
+        const hasMissingPrices = !quickConfirmOrder.items ||
+          quickConfirmOrder.items.some(item => !item.unitCost || item.unitCost === 0)
+        const noPrices    = hasMissingPrices
         const shortfall   = quickConfirmOrder.totalAmount - cashBalance
-        const noFunds     = !noPrices && shortfall > 0
-        const canProceed  = !noPrices && !noFunds
+        const noFunds     = !hasMissingPrices && shortfall > 0
+        const canProceed  = !hasMissingPrices && !noFunds
         return (
           <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50">
             <div className="bg-white rounded-2xl p-6 w-full max-w-sm shadow-xl space-y-4">

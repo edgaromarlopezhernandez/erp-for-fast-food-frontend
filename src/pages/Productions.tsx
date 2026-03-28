@@ -25,12 +25,19 @@ const fmtQty = (n: number, unit: string) => {
   return `${n.toLocaleString('es-MX')} ${u}`
 }
 
-const today = () => new Date().toISOString().slice(0, 10)
+const formatDateLocal = (d: Date) => {
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${y}-${m}-${day}`
+}
+
+const today = () => formatDateLocal(new Date())
 
 const maxProductionDate = () => {
   const d = new Date()
   d.setDate(d.getDate() + 6)
-  return d.toISOString().slice(0, 10)
+  return formatDateLocal(d)
 }
 
 const STATUS_LABELS: Record<string, { label: string; color: string }> = {
@@ -102,7 +109,7 @@ export default function Productions() {
   const purchasedItems = activeItems.filter(i => i.itemType === 'PURCHASED')
 
   const unitLabel = (unitType: string) =>
-    unitType === 'GRAM' ? 'g' : unitType === 'MILLILITER' ? 'ml' : 'pzas'
+    unitType === 'GRAM' ? 'g' : unitType === 'MILLILITER' ? 'ml' : 'pza'
 
   // ── lote mutations ────────────────────────────────────────────────────────
   const createMut = useMutation({
@@ -110,7 +117,7 @@ export default function Productions() {
     onSuccess: (data) => {
       qc.invalidateQueries({ queryKey: ['productions'] })
       if (data.autoPurchaseOrderFolio && data.insufficientIngredients?.length) {
-        qc.invalidateQueries({ queryKey: ['purchaseOrders'] })
+        qc.invalidateQueries({ queryKey: ['purchase-orders'] })
         setStockAlert({ folio: data.autoPurchaseOrderFolio, items: data.insufficientIngredients })
       }
       closeForm()
