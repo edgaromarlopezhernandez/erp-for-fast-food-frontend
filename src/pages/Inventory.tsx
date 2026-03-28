@@ -8,7 +8,7 @@ import {
 } from '../api/inventory'
 import { getCarts } from '../api/carts'
 import { getTenantProfile } from '../api/tenant'
-import type { InventoryItem, InventoryItemRequest, MovementType, UnitType, PerishableItemAnalysis } from '../types'
+import type { InventoryItem, InventoryItemRequest, MovementType, UnitType, ItemType, PerishableItemAnalysis } from '../types'
 import { Plus, Pencil, TrendingUp, AlertTriangle, X, History, Trash2, Warehouse, ArrowRightLeft, BarChart2, ClipboardList, PackagePlus } from 'lucide-react'
 
 type BulkRow = { id: number; name: string; unitType: UnitType; qty: string; price: string }
@@ -63,10 +63,11 @@ export default function Inventory() {
   const [bulkError, setBulkError] = useState('')
 
   const [form, setForm] = useState<InventoryItemRequest>({
-    name: '', unitType: 'PIECE', minimumStock: 0, averageCost: 0,
+    name: '', unitType: 'PIECE', itemType: 'PURCHASED', minimumStock: 0, averageCost: 0,
   })
   const [costCalc, setCostCalc] = useState({ totalPrice: '', totalQty: '' })
   const [showInitialStock, setShowInitialStock] = useState(false)
+  const [isPerishable, setIsPerishable] = useState(false)
 
   const { data: tenantProfile } = useQuery({ queryKey: ['tenant-profile'], queryFn: getTenantProfile })
   const withinOnboardingPeriod = (() => {
@@ -86,9 +87,18 @@ export default function Inventory() {
 
   const saveMut = useMutation({
     mutationFn: async () => {
+      // Sanitize: si el usuario dejó campos numéricos vacíos al guardar, aplicar mínimos
+      const sanitized = {
+        ...form,
+        shelfLifeDays: isPerishable ? Math.max(1, form.shelfLifeDays ?? 1) : undefined,
+        restockLeadTimeDays: isPerishable && form.itemType !== 'PRODUCED'
+          ? Math.max(1, form.restockLeadTimeDays ?? 1) : undefined,
+        productionLeadTimeMinutes: isPerishable && form.itemType === 'PRODUCED'
+          ? Math.max(1, form.productionLeadTimeMinutes ?? 60) : undefined,
+      }
       const item = itemModal.item
-        ? await updateInventoryItem(itemModal.item.id, form)
-        : await createInventoryItem(form)
+        ? await updateInventoryItem(itemModal.item.id, sanitized)
+        : await createInventoryItem(sanitized)
 
       if (!itemModal.item) {
         const initQty   = parseFloat(costCalc.totalQty)
@@ -105,6 +115,7 @@ export default function Inventory() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['inventory'] })
       qc.invalidateQueries({ queryKey: ['expenses'] })
+      qc.invalidateQueries({ queryKey: ['perishable-analysis'] })
       setItemModal({ open: false })
     },
   })
@@ -201,13 +212,16 @@ export default function Inventory() {
 
   const openEdit = (item: InventoryItem) => {
     setForm({
-      name: item.name, unitType: item.unitType, minimumStock: item.minimumStock, averageCost: item.averageCost,
+      name: item.name, unitType: item.unitType, itemType: item.itemType ?? 'PURCHASED',
+      minimumStock: item.minimumStock, averageCost: item.averageCost,
       requiresShiftCount: item.requiresShiftCount, containerSize: item.containerSize, containerLabel: item.containerLabel,
-      discrepancyTolerancePct: item.discrepancyTolerancePct,
-      shelfLifeDays: item.shelfLifeDays, restockLeadTimeDays: item.restockLeadTimeDays,
+      shelfLifeDays: item.shelfLifeDays,
+      restockLeadTimeDays: item.restockLeadTimeDays,
+      productionLeadTimeMinutes: item.productionLeadTimeMinutes,
     })
     setCostCalc({ totalPrice: '', totalQty: '' })
     setShowInitialStock(false)
+    setIsPerishable(item.shelfLifeDays !== undefined)
     setItemModal({ open: true, item })
   }
 
@@ -287,7 +301,7 @@ export default function Inventory() {
                 <ArrowRightLeft size={15} /> Transferir a PDV
               </button>
               <button
-                onClick={() => { setForm({ name: '', unitType: 'PIECE', minimumStock: 0, averageCost: 0 }); setCostCalc({ totalPrice: '', totalQty: '' }); setShowInitialStock(false); setItemModal({ open: true }) }}
+                onClick={() => { setForm({ name: '', unitType: 'PIECE', itemType: 'PURCHASED', minimumStock: 0, averageCost: 0 }); setCostCalc({ totalPrice: '', totalQty: '' }); setShowInitialStock(false); setIsPerishable(false); setItemModal({ open: true }) }}
                 disabled={activeCarts.length === 0}
                 title={activeCarts.length === 0 ? 'Configura tus puntos de venta antes de agregar insumos' : undefined}
                 className="flex items-center gap-2 bg-violet-600 hover:bg-violet-700 disabled:opacity-40 disabled:cursor-not-allowed text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors">
@@ -435,7 +449,7 @@ export default function Inventory() {
                         <PackagePlus size={16} /> Cargar inventario inicial
                       </button>
                       <button
-                        onClick={() => { setForm({ name: '', unitType: 'PIECE', minimumStock: 0, averageCost: 0 }); setCostCalc({ totalPrice: '', totalQty: '' }); setShowInitialStock(false); setItemModal({ open: true }) }}
+                        onClick={() => { setForm({ name: '', unitType: 'PIECE', itemType: 'PURCHASED', minimumStock: 0, averageCost: 0 }); setCostCalc({ totalPrice: '', totalQty: '' }); setShowInitialStock(false); setIsPerishable(false); setItemModal({ open: true }) }}
                         className="border border-amber-400 text-amber-700 hover:bg-amber-100 text-sm font-medium py-2.5 px-4 rounded-xl transition-colors whitespace-nowrap">
                         + Uno a la vez
                       </button>
@@ -583,18 +597,22 @@ export default function Inventory() {
                 <tbody>
                   {perishableData.items.map((item: PerishableItemAnalysis) => {
                     const u = item.unitType === 'GRAM' ? 'g' : item.unitType === 'MILLILITER' ? 'ml' : 'pza'
+                    const isProduced = item.itemType === 'PRODUCED'
                     const cfg = {
-                      CRITICAL: { label: 'Crítico',     bg: 'bg-red-100',    text: 'text-red-700',    row: 'bg-red-50/40' },
-                      LOW:      { label: 'Pedir pronto', bg: 'bg-amber-100',  text: 'text-amber-700',  row: 'bg-amber-50/40' },
-                      EXCESS:   { label: 'Exceso',       bg: 'bg-purple-100', text: 'text-purple-700', row: 'bg-purple-50/20' },
-                      OK:       { label: 'OK',           bg: 'bg-green-100',  text: 'text-green-700',  row: '' },
-                      NO_DATA:  { label: 'Sin datos',    bg: 'bg-slate-100',  text: 'text-slate-500',  row: '' },
+                      CRITICAL: { label: isProduced ? 'Producir YA' : 'Crítico',      bg: 'bg-red-100',    text: 'text-red-700',    row: 'bg-red-50/40' },
+                      LOW:      { label: isProduced ? 'Producir pronto' : 'Pedir pronto', bg: 'bg-amber-100',  text: 'text-amber-700',  row: 'bg-amber-50/40' },
+                      EXCESS:   { label: 'Exceso',                                     bg: 'bg-purple-100', text: 'text-purple-700', row: 'bg-purple-50/20' },
+                      OK:       { label: 'OK',                                         bg: 'bg-green-100',  text: 'text-green-700',  row: '' },
+                      NO_DATA:  { label: 'Sin datos',                                  bg: 'bg-slate-100',  text: 'text-slate-500',  row: '' },
                     }[item.status] ?? { label: item.status, bg: 'bg-slate-100', text: 'text-slate-500', row: '' }
+                    const leadTimeHint = isProduced && item.productionLeadTimeMinutes
+                      ? `producción: ${item.productionLeadTimeMinutes}min`
+                      : `proveedor: ${item.restockLeadTimeDays}d`
                     return (
                       <tr key={item.inventoryItemId} className={`border-b border-slate-100 last:border-0 ${cfg.row}`}>
                         <td className="px-5 py-3">
                           <p className="font-medium text-slate-800">{item.name}</p>
-                          <p className="text-xs text-slate-400">vida útil: {item.shelfLifeDays}d · proveedor: {item.restockLeadTimeDays}d</p>
+                          <p className="text-xs text-slate-400">vida útil: {item.shelfLifeDays}d · {leadTimeHint}</p>
                         </td>
                         <td className="px-3 py-3 text-right text-slate-700 whitespace-nowrap">
                           {item.currentStock.toFixed(2)} <span className="text-slate-400">{u}</span>
@@ -637,7 +655,7 @@ export default function Inventory() {
           <div className="px-5 py-2 bg-slate-50 border-t border-slate-100">
             <p className="text-xs text-slate-400">
               Consumo promedio de los últimos <strong>{perishableWindow} días</strong> (ventas + elaboraciones).
-              Crítico = se acaba antes del proveedor · Exceso = riesgo de desperdicio.
+              Crítico = se acaba antes del lead time (pedir/producir YA) · Exceso = riesgo de desperdicio.
             </p>
           </div>
         </div>
@@ -758,6 +776,27 @@ export default function Inventory() {
                 )}
               </div>
 
+              {/* ── Tipo de insumo ────────────────────────────────────────────── */}
+              <div>
+                <label className="text-sm font-medium text-slate-700 block mb-1.5">Tipo de insumo</label>
+                <div className="grid grid-cols-2 gap-2">
+                  {([['PURCHASED', 'Comprado', 'Se adquiere de un proveedor'], ['PRODUCED', 'Elaboración propia', 'Se produce internamente con una receta']] as [ItemType, string, string][]).map(([val, label, hint]) => (
+                    <button
+                      key={val}
+                      type="button"
+                      onClick={() => {
+                        setForm({ ...form, itemType: val, containerSize: undefined, containerLabel: undefined })
+                        setCostCalc({ totalPrice: '', totalQty: '' })
+                      }}
+                      className={`text-left border rounded-xl px-3 py-2.5 transition-colors ${form.itemType === val ? 'border-violet-500 bg-violet-50' : 'border-slate-200 bg-white'}`}
+                    >
+                      <p className={`text-sm font-semibold ${form.itemType === val ? 'text-violet-700' : 'text-slate-700'}`}>{label}</p>
+                      <p className="text-xs text-slate-400 mt-0.5">{hint}</p>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
               {!itemModal.item ? (
                 /* ── CREAR: stock inicial + costo unificado (A+B) ─────────────── */
                 <div className="space-y-3">
@@ -778,8 +817,12 @@ export default function Inventory() {
 
                       {showInitialStock && (
                         <>
-                          <p className="text-xs text-slate-400">Indica cuánto tienes y cuánto pagaste para establecer el costo desde el primer día. No afecta el saldo de caja.</p>
-                          <div className="grid grid-cols-2 gap-2">
+                          <p className="text-xs text-slate-400">
+                            {form.itemType === 'PRODUCED'
+                              ? 'Indica cuánto tienes ya preparado. El costo se calculará a partir de su receta de producción.'
+                              : 'Indica cuánto tienes y cuánto pagaste para establecer el costo desde el primer día. No afecta el saldo de caja.'}
+                          </p>
+                          <div className={form.itemType === 'PRODUCED' ? '' : 'grid grid-cols-2 gap-2'}>
                             <div>
                               <label className="text-xs text-slate-500 block mb-1">
                                 Cantidad ({UNIT_LABELS[form.unitType]})
@@ -790,14 +833,16 @@ export default function Inventory() {
                                 placeholder={form.unitType === 'GRAM' ? 'ej. 1200' : form.unitType === 'MILLILITER' ? 'ej. 1000' : 'ej. 1'}
                                 className="w-full border border-slate-300 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:border-violet-500" />
                             </div>
-                            <div>
-                              <label className="text-xs text-slate-500 block mb-1">Precio total pagado $</label>
-                              <input type="number" min={0} step="0.01"
-                                value={costCalc.totalPrice}
-                                onChange={(e) => handleCostCalc('totalPrice', e.target.value)}
-                                placeholder="ej. 160.00"
-                                className="w-full border border-slate-300 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:border-violet-500" />
-                            </div>
+                            {form.itemType === 'PURCHASED' && (
+                              <div>
+                                <label className="text-xs text-slate-500 block mb-1">Precio total pagado $</label>
+                                <input type="number" min={0} step="0.01"
+                                  value={costCalc.totalPrice}
+                                  onChange={(e) => handleCostCalc('totalPrice', e.target.value)}
+                                  placeholder="ej. 160.00"
+                                  className="w-full border border-slate-300 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:border-violet-500" />
+                              </div>
+                            )}
                           </div>
                           {(() => {
                             const qty = parseFloat(costCalc.totalQty)
@@ -842,39 +887,45 @@ export default function Inventory() {
                 </div>
               ) : (
                 /* ── EDITAR: calculadora de costo + override mínimo ───────────── */
-                <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 space-y-2.5">
-                  <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Costo de compra</p>
-                  <div className="grid grid-cols-2 gap-2">
-                    <div>
-                      <label className="text-xs text-slate-500 block mb-1">Precio total pagado $</label>
-                      <input type="number" min={0} step="0.01"
-                        value={costCalc.totalPrice}
-                        onChange={(e) => handleCostCalc('totalPrice', e.target.value)}
-                        placeholder="ej. 160.00"
-                        className="w-full border border-slate-300 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:border-violet-500" />
+                form.itemType === 'PURCHASED' ? (
+                  <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 space-y-2.5">
+                    <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Costo de compra</p>
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <label className="text-xs text-slate-500 block mb-1">Precio total pagado $</label>
+                        <input type="number" min={0} step="0.01"
+                          value={costCalc.totalPrice}
+                          onChange={(e) => handleCostCalc('totalPrice', e.target.value)}
+                          placeholder="ej. 160.00"
+                          className="w-full border border-slate-300 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:border-violet-500" />
+                      </div>
+                      <div>
+                        <label className="text-xs text-slate-500 block mb-1">
+                          Cantidad comprada ({UNIT_LABELS[form.unitType]})
+                        </label>
+                        <input type="number" min={0} step="1"
+                          value={costCalc.totalQty}
+                          onChange={(e) => handleCostCalc('totalQty', e.target.value)}
+                          placeholder={form.unitType === 'GRAM' ? 'ej. 1200' : form.unitType === 'MILLILITER' ? 'ej. 1000' : 'ej. 1'}
+                          className="w-full border border-slate-300 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:border-violet-500" />
+                      </div>
                     </div>
-                    <div>
-                      <label className="text-xs text-slate-500 block mb-1">
-                        Cantidad comprada ({UNIT_LABELS[form.unitType]})
-                      </label>
-                      <input type="number" min={0} step="1"
-                        value={costCalc.totalQty}
-                        onChange={(e) => handleCostCalc('totalQty', e.target.value)}
-                        placeholder={form.unitType === 'GRAM' ? 'ej. 1200' : form.unitType === 'MILLILITER' ? 'ej. 1000' : 'ej. 1'}
-                        className="w-full border border-slate-300 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:border-violet-500" />
-                    </div>
+                    {calcUnitCost !== null ? (
+                      <div className="flex items-center justify-between bg-violet-50 border border-violet-200 rounded-lg px-3 py-2">
+                        <span className="text-xs text-violet-700">Costo por {UNIT_LABELS[form.unitType]}</span>
+                        <span className="text-sm font-bold text-violet-700">${calcUnitCost.toFixed(4)}</span>
+                      </div>
+                    ) : (
+                      <p className="text-xs text-slate-400">
+                        Costo actual: <strong>${form.averageCost.toFixed(4)}/{UNIT_LABELS[form.unitType]}</strong>. Rellena los campos para recalcular.
+                      </p>
+                    )}
                   </div>
-                  {calcUnitCost !== null ? (
-                    <div className="flex items-center justify-between bg-violet-50 border border-violet-200 rounded-lg px-3 py-2">
-                      <span className="text-xs text-violet-700">Costo por {UNIT_LABELS[form.unitType]}</span>
-                      <span className="text-sm font-bold text-violet-700">${calcUnitCost.toFixed(4)}</span>
-                    </div>
-                  ) : (
-                    <p className="text-xs text-slate-400">
-                      Costo actual: <strong>${form.averageCost.toFixed(4)}/{UNIT_LABELS[form.unitType]}</strong>. Rellena los campos para recalcular.
-                    </p>
-                  )}
-                </div>
+                ) : (
+                  <div className="bg-teal-50 border border-teal-200 rounded-xl px-3 py-2.5">
+                    <p className="text-xs text-teal-700">El costo se calcula automáticamente a partir de la receta de producción.</p>
+                  </div>
+                )
               )}
 
               {itemModal.item && (
@@ -894,53 +945,60 @@ export default function Inventory() {
               )}
             </div>
 
-            {/* ── Presentación / Envase ─────────────────────────────────────── */}
-            <div className="border-t border-slate-100 pt-4 space-y-2">
-              <div>
-                <p className="text-sm font-semibold text-slate-700 mb-0.5">Presentación de compra</p>
-                <p className="text-xs text-slate-400 mb-2">
-                  El sistema usa esto para sugerir resurtidos en envases completos en lugar de gramos/piezas sueltas.
-                  Ej: mayonesa en frascos de 3,400 g.
-                </p>
-              </div>
-              <div className="grid grid-cols-2 gap-2">
+            {/* ── Presentación / Envase — solo para insumos comprados ──────── */}
+            {form.itemType === 'PURCHASED' && (
+              <div className="border-t border-slate-100 pt-4 space-y-2">
                 <div>
-                  <label className="text-xs text-slate-500 block mb-1">
-                    Tamaño del envase ({form.unitType === 'PIECE' ? 'pzas' : form.unitType === 'GRAM' ? 'g' : 'ml'})
-                  </label>
-                  <input type="number" min={0} step="1"
-                    value={form.containerSize ?? ''}
-                    onChange={(e) => setForm({ ...form, containerSize: e.target.value ? parseFloat(e.target.value) : undefined })}
-                    placeholder="ej. 3400"
-                    className="w-full border border-slate-300 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:border-violet-500" />
+                  <p className="text-sm font-semibold text-slate-700 mb-0.5">¿Cómo lo compras?</p>
+                  <p className="text-xs text-slate-400 mb-2">
+                    Indica cómo lo pides cuando vas a surtir. El sistema sugerirá resurtidos en esa unidad.
+                    Si lo compras a granel o sin presentación fija (mercado), puedes dejarlo vacío.
+                  </p>
                 </div>
-                <div>
-                  <label className="text-xs text-slate-500 block mb-1">Nombre de la presentación</label>
-                  <input type="text"
-                    value={form.containerLabel ?? ''}
-                    onChange={(e) => setForm({ ...form, containerLabel: e.target.value || undefined })}
-                    placeholder="frasco, lata, caja, bolsa..."
-                    className="w-full border border-slate-300 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:border-violet-500" />
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="text-xs text-slate-500 block mb-1">
+                      Cantidad por unidad de compra ({form.unitType === 'PIECE' ? 'pzas' : form.unitType === 'GRAM' ? 'g' : 'ml'})
+                    </label>
+                    <input type="number" min={0} step="1"
+                      value={form.containerSize ?? ''}
+                      onChange={(e) => setForm({ ...form, containerSize: e.target.value ? parseFloat(e.target.value) : undefined })}
+                      placeholder="ej. 3400"
+                      className="w-full border border-slate-300 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:border-violet-500" />
+                  </div>
+                  <div>
+                    <label className="text-xs text-slate-500 block mb-1">Nombre de la presentación</label>
+                    <input type="text"
+                      value={form.containerLabel ?? ''}
+                      onChange={(e) => setForm({ ...form, containerLabel: e.target.value || undefined })}
+                      placeholder="frasco, lata, caja, kilo, huacal, red..."
+                      className="w-full border border-slate-300 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:border-violet-500" />
+                  </div>
                 </div>
+                {form.containerSize && form.containerLabel && (
+                  <p className="text-xs text-teal-700 bg-teal-50 border border-teal-200 rounded-lg px-3 py-1.5">
+                    El sistema sugerirá resurtido en <strong>{form.containerLabel}</strong> — cada uno equivale a <strong>{form.containerSize} {form.unitType === 'PIECE' ? 'pzas' : form.unitType === 'GRAM' ? 'g' : 'ml'}</strong>.
+                  </p>
+                )}
               </div>
-              {form.containerSize && form.containerLabel && (
-                <p className="text-xs text-teal-700 bg-teal-50 border border-teal-200 rounded-lg px-3 py-1.5">
-                  Los sugeridos de resurtido se calcularán en <strong>{form.containerLabel} de {form.containerSize} {form.unitType === 'PIECE' ? 'pzas' : form.unitType === 'GRAM' ? 'g' : 'ml'}</strong>.
-                </p>
-              )}
-            </div>
+            )}
 
             {/* ── Perecedero ────────────────────────────────────────────────── */}
             <div className="border-t border-slate-100 pt-4 space-y-3">
               <label className="flex items-center gap-2.5 cursor-pointer select-none">
                 <input
                   type="checkbox"
-                  checked={form.shelfLifeDays !== undefined}
+                  checked={isPerishable}
                   onChange={(e) => {
+                    setIsPerishable(e.target.checked)
                     if (e.target.checked) {
-                      setForm({ ...form, shelfLifeDays: 1, restockLeadTimeDays: 1 })
+                      if (form.itemType === 'PRODUCED') {
+                        setForm({ ...form, shelfLifeDays: 1, productionLeadTimeMinutes: 60 })
+                      } else {
+                        setForm({ ...form, shelfLifeDays: 1, restockLeadTimeDays: 1 })
+                      }
                     } else {
-                      setForm({ ...form, shelfLifeDays: undefined, restockLeadTimeDays: undefined })
+                      setForm({ ...form, shelfLifeDays: undefined, restockLeadTimeDays: undefined, productionLeadTimeMinutes: undefined })
                     }
                   }}
                   className="w-4 h-4 rounded accent-violet-600"
@@ -948,28 +1006,61 @@ export default function Inventory() {
                 <span className="text-sm font-semibold text-slate-700">Perecedero</span>
               </label>
 
-              {form.shelfLifeDays !== undefined && (
+              {isPerishable && (
                 <>
-                  <div className="grid grid-cols-2 gap-3">
-                    <div>
-                      <label className="text-xs text-slate-500 block mb-1">Vida útil (días)</label>
-                      <input type="number" min={1} step={1}
-                        value={form.shelfLifeDays}
-                        onChange={(e) => setForm({ ...form, shelfLifeDays: e.target.value ? parseInt(e.target.value) : 1 })}
-                        className="w-full border border-slate-300 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:border-violet-500" />
+                  {form.itemType === 'PRODUCED' ? (
+                    /* ── PRODUCED: vida útil + tiempo de producción ──── */
+                    <div className="space-y-3">
+                      <div>
+                        <label className="text-xs text-slate-500 block mb-1">Vida útil (días)</label>
+                        <p className="text-xs text-slate-400 mb-1">¿Cuántos días dura una vez preparado? Ej: Esquite hervido = 1 día.</p>
+                        <input type="number" min={1} step={1}
+                          value={form.shelfLifeDays ?? ''}
+                          onChange={(e) => setForm({ ...form, shelfLifeDays: e.target.value ? parseInt(e.target.value) : undefined })}
+                          onBlur={() => setForm(f => ({ ...f, shelfLifeDays: Math.max(1, f.shelfLifeDays ?? 1) }))}
+                          className="w-full border border-slate-300 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:border-violet-500" />
+                      </div>
+                      <div>
+                        <label className="text-xs text-slate-500 block mb-1">Tiempo de producción (minutos)</label>
+                        <p className="text-xs text-slate-400 mb-1">¿Cuánto tarda en prepararse un batch desde cero? El sistema alertará con anticipación.</p>
+                        <input type="number" min={1} step={1}
+                          value={form.productionLeadTimeMinutes ?? ''}
+                          onChange={(e) => setForm({ ...form, productionLeadTimeMinutes: e.target.value ? parseInt(e.target.value) : undefined })}
+                          onBlur={() => setForm(f => ({ ...f, productionLeadTimeMinutes: Math.max(1, f.productionLeadTimeMinutes ?? 60) }))}
+                          placeholder="ej. 45"
+                          className="w-full border border-slate-300 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:border-violet-500" />
+                      </div>
+                      <p className="text-xs text-teal-700 bg-teal-50 border border-teal-200 rounded-lg px-3 py-2">
+                        El sistema alertará para producir cuando el stock restante cubra menos de <strong>{form.productionLeadTimeMinutes ?? 60} min</strong> de consumo + medio día de seguridad.
+                      </p>
                     </div>
-                    <div>
-                      <label className="text-xs text-slate-500 block mb-1">Días proveedor</label>
-                      <p className="text-xs text-slate-400 mb-1">¿Cuántos días tarda tu proveedor en surtir este insumo?</p>
-                      <input type="number" min={1} step={1}
-                        value={form.restockLeadTimeDays ?? 1}
-                        onChange={(e) => setForm({ ...form, restockLeadTimeDays: e.target.value ? parseInt(e.target.value) : 1 })}
-                        className="w-full border border-slate-300 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:border-violet-500" />
+                  ) : (
+                    /* ── PURCHASED: vida útil + días de proveedor ──────── */
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label className="text-xs text-slate-500 block mb-1">Vida útil (días)</label>
+                        <input type="number" min={1} step={1}
+                          value={form.shelfLifeDays ?? ''}
+                          onChange={(e) => setForm({ ...form, shelfLifeDays: e.target.value ? parseInt(e.target.value) : undefined })}
+                          onBlur={() => setForm(f => ({ ...f, shelfLifeDays: Math.max(1, f.shelfLifeDays ?? 1) }))}
+                          className="w-full border border-slate-300 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:border-violet-500" />
+                      </div>
+                      <div>
+                        <label className="text-xs text-slate-500 block mb-1">Días proveedor</label>
+                        <p className="text-xs text-slate-400 mb-1">¿Cuántos días tarda tu proveedor?</p>
+                        <input type="number" min={1} step={1}
+                          value={form.restockLeadTimeDays ?? ''}
+                          onChange={(e) => setForm({ ...form, restockLeadTimeDays: e.target.value ? parseInt(e.target.value) : undefined })}
+                          onBlur={() => setForm(f => ({ ...f, restockLeadTimeDays: Math.max(1, f.restockLeadTimeDays ?? 1) }))}
+                          className="w-full border border-slate-300 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:border-violet-500" />
+                      </div>
                     </div>
-                  </div>
-                  <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
-                    Con estos datos el sistema calculará tu mínimo y máximo sugerido usando el consumo promedio de los últimos 30 días.
-                  </p>
+                  )}
+                  {form.itemType === 'PURCHASED' && (
+                    <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                      Con estos datos el sistema calculará tu mínimo y máximo sugerido usando el consumo promedio de los últimos 30 días.
+                    </p>
+                  )}
                 </>
               )}
             </div>
@@ -983,14 +1074,27 @@ export default function Inventory() {
                 <span className="text-sm font-medium text-slate-700">Requiere conteo físico en turno</span>
               </label>
               {form.requiresShiftCount && (
-                <div className="pl-6">
-                  <label className="text-xs text-slate-500 block mb-1">Tolerancia de discrepancia (%)</label>
-                  <input type="number" min={0} max={100} step="0.1"
-                    value={form.discrepancyTolerancePct ?? ''}
-                    onChange={(e) => setForm({ ...form, discrepancyTolerancePct: e.target.value ? parseFloat(e.target.value) : undefined })}
-                    placeholder="ej. 5 = tolerar hasta 5% de diferencia"
-                    className="w-full border border-slate-300 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:border-violet-500" />
-                  <p className="text-xs text-slate-400 mt-1">Estrategia ALERTA. Vacío = cualquier diferencia genera alerta.</p>
+                <div className="bg-slate-50 border border-slate-200 rounded-xl px-3 py-2.5 space-y-1">
+                  <p className="text-xs font-semibold text-slate-600">Tolerancia de discrepancia — calculada automáticamente</p>
+                  <div className="flex items-center justify-between">
+                    <p className="text-xs text-slate-400">
+                      {form.itemType === 'PRODUCED'
+                        ? form.unitType === 'PIECE' ? 'Pieza elaborada — variación de batch'
+                        : form.unitType === 'GRAM'  ? 'Gramo elaborado — merma de cocción y rendimiento'
+                        :                             'Mililitro elaborado — reducción por cocción'
+                        : form.unitType === 'PIECE' ? 'Pieza comprada — conteo exacto'
+                        : form.unitType === 'GRAM'  ? 'Gramo comprado — báscula e imprecisión natural'
+                        :                             'Mililitro comprado — variación al servir'}
+                    </p>
+                    <span className="text-sm font-bold text-violet-700 shrink-0 ml-3">
+                      {form.itemType === 'PRODUCED'
+                        ? form.unitType === 'PIECE' ? '3 %' : form.unitType === 'GRAM' ? '5 %' : '4 %'
+                        : form.unitType === 'PIECE' ? '2 %' : '3 %'}
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-400">
+                    El sistema alertará solo si la diferencia supera ese umbral, calibrado para detectar robo hormiga sin falsas alarmas por varianza natural.
+                  </p>
                 </div>
               )}
             </div>

@@ -13,8 +13,8 @@ export const createPurchaseOrder = (data: PurchaseOrderRequest) =>
 export const confirmPurchaseOrder = (id: number) =>
   client.post<PurchaseOrder>(`/api/purchase-orders/${id}/confirm`).then((r) => r.data)
 
-export const cancelPurchaseOrder = (id: number) =>
-  client.post<PurchaseOrder>(`/api/purchase-orders/${id}/cancel`).then((r) => r.data)
+export const cancelPurchaseOrder = (id: number, reason: string) =>
+  client.post<PurchaseOrder>(`/api/purchase-orders/${id}/cancel`, { reason }).then((r) => r.data)
 
 export const updatePurchaseOrder = (id: number, data: PurchaseOrderRequest) =>
   client.patch<PurchaseOrder>(`/api/purchase-orders/${id}`, data).then((r) => r.data)

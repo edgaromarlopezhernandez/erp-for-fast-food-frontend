@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
+import type { DailySummary } from '../types'
 import { getInventory, getCartStockAnalysis } from '../api/inventory'
 import { getSales } from '../api/sales'
 import { getCarts } from '../api/carts'
@@ -9,9 +10,10 @@ import { getShifts } from '../api/shifts'
 import { getRequisitions } from '../api/requisitions'
 import { getPurchaseOrders } from '../api/purchaseOrders'
 import { getGeneralRegister } from '../api/cashAccount'
+import { getDailySummary } from '../api/reports'
 import {
   AlertTriangle, TrendingUp, ShoppingBag, Warehouse,
-  Bell, DollarSign, XCircle, Clock, LayoutGrid, Truck, BanknoteIcon,
+  Bell, DollarSign, XCircle, Clock, LayoutGrid, Truck, BanknoteIcon, PlayCircle,
 } from 'lucide-react'
 import { Link } from 'react-router-dom'
 
@@ -39,15 +41,26 @@ export default function Dashboard() {
     enabled: isCartView,
   })
 
+  const { data: dailySummary } = useQuery({
+    queryKey: ['today-summary', selectedCartId],
+    queryFn: () => getDailySummary(selectedCartId),
+    refetchInterval: 60_000,
+  })
+
   // Global alerts — always shown regardless of filter
   const { data: duePayroll = [] }         = useQuery({ queryKey: ['payroll-due'],    queryFn: getPayrollDueToday })
   const { data: pendingCancels = [] }     = useQuery({ queryKey: ['cancellation-requests', 'PENDING'], queryFn: () => getCancellationRequests('PENDING') })
   const { data: pendingShifts = [] }      = useQuery({ queryKey: ['shifts', 'PENDING_APPROVAL'], queryFn: () => getShifts('PENDING_APPROVAL') })
+  const { data: openShifts = [] }         = useQuery({ queryKey: ['shifts', 'OPEN'], queryFn: () => getShifts('OPEN'), refetchInterval: 60_000 })
   const { data: pendingReqs = [] }        = useQuery({ queryKey: ['requisitions', 'SOLICITADA'],       queryFn: () => getRequisitions({ status: 'SOLICITADA' }),       refetchInterval: 60_000 })
   const { data: approvedReqs = [] }       = useQuery({ queryKey: ['requisitions', 'APROBADA'],         queryFn: () => getRequisitions({ status: 'APROBADA' }),         refetchInterval: 60_000 })
   const { data: discrepancyReqs = [] }    = useQuery({ queryKey: ['requisitions', 'CON_DISCREPANCIA'], queryFn: () => getRequisitions({ status: 'CON_DISCREPANCIA' }), refetchInterval: 60_000 })
   const { data: draftOrders = [] }        = useQuery({ queryKey: ['purchase-orders'],                  queryFn: getPurchaseOrders,                                     refetchInterval: 60_000 })
   const { data: generalRegister }         = useQuery({ queryKey: ['general-register'],                 queryFn: getGeneralRegister,                                    refetchInterval: 60_000 })
+
+  // Carritos activos sin turno abierto
+  const openShiftCartIds = new Set(openShifts.map((s) => s.cartId))
+  const cartsWithoutShift = activeCarts.filter((c) => !openShiftCartIds.has(c.id))
 
   // Alerta de fondos insuficientes para resurtidos pendientes
   const pendingDraftOrders = draftOrders.filter(o => o.status === 'DRAFT')
@@ -96,6 +109,50 @@ export default function Dashboard() {
       </div>
 
       {/* Global alerts */}
+
+      {/* ── Turnos en curso ── */}
+      {(openShifts.length > 0 || cartsWithoutShift.length > 0) && (
+        <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+          <div className="px-4 py-3 border-b border-slate-100 flex items-center justify-between">
+            <div className="flex items-center gap-2 text-slate-700 font-semibold text-sm">
+              <PlayCircle size={16} className="text-blue-500" />
+              Turnos en curso
+            </div>
+            <Link to="/shifts" className="text-xs text-violet-600 font-medium underline">
+              Ver todos →
+            </Link>
+          </div>
+
+          {openShifts.length > 0 && (
+            <ul className="divide-y divide-slate-100">
+              {openShifts.map((shift) => (
+                <li key={shift.id} className="flex items-center justify-between px-4 py-3 gap-3">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      <span className="font-medium text-sm text-slate-800">{shift.sellerName}</span>
+                      <span className="text-xs text-slate-400">· {shift.cartName}</span>
+                    </div>
+                    <p className="text-xs text-slate-400 mt-0.5">
+                      Desde las {new Date(shift.openedAt).toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' })}
+                    </p>
+                  </div>
+                  <ShiftElapsed openedAt={shift.openedAt} />
+                </li>
+              ))}
+            </ul>
+          )}
+
+          {cartsWithoutShift.length > 0 && (
+            <div className={`px-4 py-3 flex items-center gap-2 text-sm text-amber-700 bg-amber-50 ${openShifts.length > 0 ? 'border-t border-amber-100' : ''}`}>
+              <AlertTriangle size={14} className="shrink-0 text-amber-500" />
+              <span>
+                Sin turno activo:{' '}
+                <span className="font-medium">{cartsWithoutShift.map((c) => c.name).join(', ')}</span>
+              </span>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* ── Fondos insuficientes para resurtidos (operación crítica) ── */}
       {insufficientFunds && (
@@ -305,7 +362,7 @@ export default function Dashboard() {
         </div>
       )}
 
-      {/* KPI Cards */}
+      {/* KPI Cards — fila 1: ventas + margen */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <KpiCard
           icon={<TrendingUp className="text-green-500" size={20} />}
@@ -351,6 +408,11 @@ export default function Dashboard() {
           </>
         )}
       </div>
+
+      {/* KPI Cards — fila 2: rentabilidad del día */}
+      {dailySummary && dailySummary.todayTransactionCount > 0 && (
+        <MarginSummaryCard summary={dailySummary} />
+      )}
 
       {/* Stock alerts */}
       {!isCartView && lowStock.length > 0 && (
@@ -438,6 +500,128 @@ function KpiCard({ icon, label, value, color }: {
       <div className="mb-2">{icon}</div>
       <div className="text-2xl font-bold text-slate-800">{value}</div>
       <div className="text-xs text-slate-500 mt-0.5">{label}</div>
+    </div>
+  )
+}
+
+function ShiftElapsed({ openedAt }: { openedAt: string }) {
+  const opened = new Date(openedAt)
+  const diffMs = Date.now() - opened.getTime()
+  const totalMins = Math.floor(diffMs / 60_000)
+  const hours = Math.floor(totalMins / 60)
+  const mins  = totalMins % 60
+  const label = hours > 0 ? `${hours}h ${mins}m` : `${mins}m`
+  const isLong = totalMins > 480 // más de 8 horas → puede ser que olvidó cerrar
+
+  return (
+    <span className={`text-xs font-semibold px-2 py-1 rounded-full shrink-0 ${
+      isLong ? 'bg-amber-100 text-amber-700' : 'bg-blue-100 text-blue-700'
+    }`}>
+      {label}
+    </span>
+  )
+}
+
+function MarginSummaryCard({ summary }: { summary: DailySummary }) {
+  const fmt = (n: number) => n.toLocaleString('es-MX', { style: 'currency', currency: 'MXN' })
+  const pct = summary.todayGrossMarginPct
+
+  const { barColor, badgeClass, label } = pct >= 50
+    ? { barColor: 'bg-green-500',  badgeClass: 'bg-green-100 text-green-700',   label: 'Excelente' }
+    : pct >= 30
+    ? { barColor: 'bg-teal-500',   badgeClass: 'bg-teal-100 text-teal-700',     label: 'Bueno' }
+    : pct >= 15
+    ? { barColor: 'bg-amber-500',  badgeClass: 'bg-amber-100 text-amber-700',   label: 'Regular' }
+    : { barColor: 'bg-red-500',    badgeClass: 'bg-red-100 text-red-700',       label: 'Bajo' }
+
+  // ── vs ayer ──────────────────────────────────────────────────────────────────
+  const yesterday = summary.yesterdayRevenue ?? 0
+  const vsYesterday: { pct: number; up: boolean; hasData: boolean } = yesterday > 0
+    ? {
+        pct: Math.abs(((summary.todayRevenue - yesterday) / yesterday) * 100),
+        up: summary.todayRevenue >= yesterday,
+        hasData: true,
+      }
+    : { pct: 0, up: true, hasData: false }
+
+  // ── Minigráfica 7 días ────────────────────────────────────────────────────────
+  const bars = summary.last7DaysRevenue ?? []
+  const maxBar = Math.max(...bars, 1)
+  const BAR_H = 28
+
+  return (
+    <div className="bg-white rounded-xl border border-slate-200 p-4">
+      <div className="flex items-center justify-between mb-3">
+        <span className="text-sm font-semibold text-slate-600">Rentabilidad de hoy</span>
+        <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${badgeClass}`}>
+          {label} · {pct.toFixed(1)}% margen bruto
+        </span>
+      </div>
+
+      <div className="grid grid-cols-3 gap-3 mb-3">
+        <div>
+          <div className="text-xs text-slate-400 mb-0.5">Ingresos</div>
+          <div className="text-base font-bold text-slate-800">{fmt(summary.todayRevenue)}</div>
+          {vsYesterday.hasData ? (
+            <div className={`text-xs font-semibold mt-0.5 ${vsYesterday.up ? 'text-green-600' : 'text-red-500'}`}>
+              {vsYesterday.up ? '▲' : '▼'} {vsYesterday.pct.toFixed(1)}% vs ayer
+            </div>
+          ) : (
+            <div className="text-xs text-slate-400 mt-0.5">sin datos de ayer</div>
+          )}
+        </div>
+        <div>
+          <div className="text-xs text-slate-400 mb-0.5">Costo estimado</div>
+          <div className="text-base font-bold text-slate-600">{fmt(summary.todayEstimatedCogs)}</div>
+        </div>
+        <div>
+          <div className="text-xs text-slate-400 mb-0.5">Ganancia bruta</div>
+          <div className={`text-base font-bold ${summary.todayGrossProfit >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+            {fmt(summary.todayGrossProfit)}
+          </div>
+        </div>
+      </div>
+
+      {/* barra de margen */}
+      <div className="w-full h-1.5 bg-slate-100 rounded-full overflow-hidden mb-3">
+        <div
+          className={`h-full rounded-full transition-all ${barColor}`}
+          style={{ width: `${Math.min(pct, 100)}%` }}
+        />
+      </div>
+
+      {/* Minigráfica últimos 7 días */}
+      {bars.some(v => v > 0) && (
+        <div>
+          <div className="text-xs text-slate-400 mb-1.5">Últimos 7 días</div>
+          <div className="flex items-end gap-1" style={{ height: BAR_H }}>
+            {bars.map((v, i) => {
+              const h = Math.max(Math.round((v / maxBar) * BAR_H), v > 0 ? 3 : 1)
+              return (
+                <div key={i} className="flex-1 flex flex-col items-center justify-end gap-0.5 group relative">
+                  <div
+                    className="w-full rounded-sm bg-violet-400 group-hover:bg-violet-600 transition-colors"
+                    style={{ height: h }}
+                  />
+                  {/* tooltip on hover */}
+                  <div className="absolute bottom-full mb-1 left-1/2 -translate-x-1/2 hidden group-hover:block z-10
+                    bg-slate-800 text-white text-[10px] rounded px-1.5 py-0.5 whitespace-nowrap pointer-events-none">
+                    {fmt(v)}
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+          <div className="flex justify-between mt-0.5">
+            <span className="text-[9px] text-slate-300">hace 7d</span>
+            <span className="text-[9px] text-slate-300">ayer</span>
+          </div>
+        </div>
+      )}
+
+      <p className="text-xs text-slate-400 mt-2">
+        Basado en costo de recetas · Solo ventas completadas
+      </p>
     </div>
   )
 }

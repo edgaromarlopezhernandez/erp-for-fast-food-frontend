@@ -64,12 +64,13 @@ export interface ProductRequest {
 
 // ── Inventory ─────────────────────────────────────────────────────────────────
 export type UnitType = 'PIECE' | 'GRAM' | 'MILLILITER'
+export type ItemType = 'PURCHASED' | 'PRODUCED'
 export type MovementType =
   | 'PURCHASE' | 'TRANSFER_TO_CART' | 'TRANSIT_DISPATCHED' | 'SALE_DEDUCTION'
   | 'MANUAL_ADJUSTMENT' | 'WASTE' | 'RETURN' | 'OPENING_STOCK'
 
 export interface InventoryItem {
-  id: number; name: string; unitType: UnitType
+  id: number; name: string; unitType: UnitType; itemType: ItemType
   currentStock: number   // stock de la ubicación solicitada (bodega o carrito)
   centralStock: number   // siempre el stock de bodega general
   minimumStock: number; averageCost: number
@@ -79,16 +80,17 @@ export interface InventoryItem {
   containerLabel?: string
   discrepancyTolerancePct?: number
   shelfLifeDays?: number
-  restockLeadTimeDays?: number
+  restockLeadTimeDays?: number       // solo PURCHASED
+  productionLeadTimeMinutes?: number // solo PRODUCED
 }
 export interface InventoryItemRequest {
-  name: string; unitType: UnitType; minimumStock: number; averageCost: number
+  name: string; unitType: UnitType; itemType: ItemType; minimumStock: number; averageCost: number
   requiresShiftCount?: boolean
   containerSize?: number
   containerLabel?: string
-  discrepancyTolerancePct?: number
   shelfLifeDays?: number
-  restockLeadTimeDays?: number
+  restockLeadTimeDays?: number       // solo PURCHASED
+  productionLeadTimeMinutes?: number // solo PRODUCED
 }
 
 // ── Perishable Analysis ────────────────────────────────────────────────────────
@@ -97,9 +99,11 @@ export interface PerishableItemAnalysis {
   inventoryItemId: number
   name: string
   unitType: string
+  itemType: string
   currentStock: number
   shelfLifeDays: number
   restockLeadTimeDays: number
+  productionLeadTimeMinutes?: number
   avgDailyConsumption: number
   estimatedDaysRemaining: number | null
   suggestedMinStock: number | null
@@ -326,6 +330,16 @@ export interface DailySales {
   transactionCount: number
   avgTicket: number
 }
+export interface DailySummary {
+  todayRevenue: number
+  todayEstimatedCogs: number
+  todayGrossProfit: number
+  todayGrossMarginPct: number
+  todayTransactionCount: number
+  yesterdayRevenue: number
+  last7DaysRevenue: number[]
+}
+
 export interface CommercialKpis {
   averageTicket: number
   totalTransactions: number
@@ -625,7 +639,7 @@ export interface CashAccount {
 }
 
 // ── Productions ───────────────────────────────────────────────────────────────
-export type ProductionStatus = 'DRAFT' | 'CONFIRMED'
+export type ProductionStatus = 'DRAFT' | 'CONFIRMED' | 'CANCELLED'
 
 export interface ProductionIngredientResponse {
   id: number
@@ -637,6 +651,19 @@ export interface ProductionIngredientResponse {
   totalCost?: number
 }
 
+export interface ProductionStockWarning {
+  inventoryItemId: number
+  name: string
+  unitType: string
+  required: number
+  available: number
+  missing: number
+  orderedQuantity?: number
+  containerSize?: number
+  containerLabel?: string
+  containersNeeded?: number
+}
+
 export interface ProductionResponse {
   id: number
   outputItemId: number
@@ -645,12 +672,15 @@ export interface ProductionResponse {
   yieldQuantity: number
   status: ProductionStatus
   notes?: string
+  cancelReason?: string
   producedAt?: string
   createdByName?: string
   totalCost?: number
   costPerUnit?: number
   createdAt: string
   ingredients: ProductionIngredientResponse[]
+  autoPurchaseOrderFolio?: string
+  insufficientIngredients?: ProductionStockWarning[]
 }
 
 export interface ProductionIngredientRequest {
