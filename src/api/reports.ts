@@ -1,5 +1,5 @@
 import client from './client'
-import type { FinancialReport, ProductProfitability, CommercialKpis, TopSellerTrend } from '../types'
+import type { FinancialReport, ProductProfitability, CommercialKpis, TopSellerTrend, DailySummary } from '../types'
 
 export const getFinancialReport = (year: number, month: number, cartId?: number) =>
   client.get<FinancialReport>('/api/reports/financial', {
@@ -21,4 +21,9 @@ export const getCommercialKpis = (year: number, month: number, cartId?: number) 
 export const getTopSellerTrend = (months = 6, cartId?: number) =>
   client.get<TopSellerTrend>('/api/reports/top-seller-trend', {
     params: { months, ...(cartId ? { cartId } : {}) },
+  }).then((r) => r.data)
+
+export const getDailySummary = (cartId?: number) =>
+  client.get<DailySummary>('/api/reports/today-summary', {
+    params: { ...(cartId ? { cartId } : {}) },
   }).then((r) => r.data)

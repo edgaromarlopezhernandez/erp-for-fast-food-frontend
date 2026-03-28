@@ -9,6 +9,7 @@ import {
 import { getInventory } from '../api/inventory'
 import type {
   ProductionResponse, ProductionRequest, ProductionIngredientRequest,
+  ProductionStockWarning,
   ProductionTemplateResponse, ProductionTemplateRequest, ProductionTemplateIngredientRequest,
 } from '../types'
 import {
@@ -26,9 +27,16 @@ const fmtQty = (n: number, unit: string) => {
 
 const today = () => new Date().toISOString().slice(0, 10)
 
+const maxProductionDate = () => {
+  const d = new Date()
+  d.setDate(d.getDate() + 6)
+  return d.toISOString().slice(0, 10)
+}
+
 const STATUS_LABELS: Record<string, { label: string; color: string }> = {
   DRAFT:     { label: 'Borrador',   color: 'bg-slate-100 text-slate-600' },
   CONFIRMED: { label: 'Confirmada', color: 'bg-emerald-100 text-emerald-700' },
+  CANCELLED: { label: 'Cancelada',  color: 'bg-red-100 text-red-700' },
 }
 
 const emptyForm = (): ProductionRequest => ({
@@ -54,7 +62,7 @@ export default function Productions() {
   const qc = useQueryClient()
 
   // ── view ──────────────────────────────────────────────────────────────────
-  const [view, setView] = useState<View>('lotes')
+  const [view, setView] = useState<View>('plantillas')
 
   // ── lotes state ───────────────────────────────────────────────────────────
   const [showForm, setShowForm]       = useState(false)
@@ -62,6 +70,8 @@ export default function Productions() {
   const [form, setForm]               = useState<ProductionRequest>(emptyForm())
   const [error, setError]             = useState('')
   const [activeTemplate, setActiveTemplate] = useState<ProductionTemplateResponse | null>(null)
+  const [stockAlert, setStockAlert]   = useState<{ folio: string; items: ProductionStockWarning[] } | null>(null)
+  const [pendingAction, setPendingAction] = useState<'confirm' | 'delete' | null>(null)
 
   // ── plantillas state ──────────────────────────────────────────────────────
   const [showTemplateForm, setShowTemplateForm]   = useState(false)
@@ -87,12 +97,24 @@ export default function Productions() {
     queryFn: () => getInventory(),
   })
 
-  const activeItems = inventoryItems.filter(i => i.active)
+  const activeItems   = inventoryItems.filter(i => i.active)
+  const producedItems = activeItems.filter(i => i.itemType === 'PRODUCED')
+  const purchasedItems = activeItems.filter(i => i.itemType === 'PURCHASED')
+
+  const unitLabel = (unitType: string) =>
+    unitType === 'GRAM' ? 'g' : unitType === 'MILLILITER' ? 'ml' : 'pzas'
 
   // ── lote mutations ────────────────────────────────────────────────────────
   const createMut = useMutation({
     mutationFn: createProduction,
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ['productions'] }); closeForm() },
+    onSuccess: (data) => {
+      qc.invalidateQueries({ queryKey: ['productions'] })
+      if (data.autoPurchaseOrderFolio && data.insufficientIngredients?.length) {
+        qc.invalidateQueries({ queryKey: ['purchaseOrders'] })
+        setStockAlert({ folio: data.autoPurchaseOrderFolio, items: data.insufficientIngredients })
+      }
+      closeForm()
+    },
     onError: (e: any) => setError(e.response?.data?.message ?? 'Error al crear producción'),
   })
 
@@ -202,11 +224,14 @@ export default function Productions() {
 
   function openEditTemplate(t: ProductionTemplateResponse) {
     setEditingTemplate(t)
+    // Derivar la unidad desde el item actual — ignora el valor guardado (puede estar desactualizado)
+    const outputItem = producedItems.find(i => i.id === t.outputItemId)
+    const derivedUnit = outputItem ? unitLabel(outputItem.unitType) : t.baseYieldUnit
     setTemplateForm({
       name: t.name,
       outputItemId: t.outputItemId,
       baseYield: t.baseYield,
-      baseYieldUnit: t.baseYieldUnit,
+      baseYieldUnit: derivedUnit,
       preparationInstructions: t.preparationInstructions ?? '',
       ingredients: t.ingredients.map(i => ({ inventoryItemId: i.inventoryItemId, quantity: i.quantity })),
     })
@@ -231,14 +256,12 @@ export default function Productions() {
 
   function handleTemplateSubmit() {
     setTemplateError('')
-    if (!templateForm.name.trim())                          { setTemplateError('El nombre es requerido'); return }
-    if (!templateForm.outputItemId)                         { setTemplateError('Selecciona el artículo que produce'); return }
-    if (!templateForm.baseYield || templateForm.baseYield <= 0) { setTemplateError('El rendimiento base debe ser mayor a 0'); return }
-    if (!templateForm.baseYieldUnit.trim())                 { setTemplateError('Indica la unidad del rendimiento'); return }
-    if (templateForm.ingredients.length === 0)              { setTemplateError('Agrega al menos un ingrediente'); return }
+    if (!templateForm.name.trim())                              { setTemplateError('El nombre es requerido'); return }
+    if (!templateForm.outputItemId)                            { setTemplateError('Selecciona la elaboración que produce'); return }
+    if (!templateForm.baseYield || templateForm.baseYield <= 0) { setTemplateError('El rendimiento debe ser mayor a 0'); return }
     for (const ing of templateForm.ingredients) {
-      if (!ing.inventoryItemId)                             { setTemplateError('Selecciona todos los ingredientes'); return }
-      if (!ing.quantity || ing.quantity <= 0)               { setTemplateError('Cantidades de ingredientes inválidas'); return }
+      if (!ing.inventoryItemId)                              { setTemplateError('Selecciona el insumo en cada fila'); return }
+      if (!ing.quantity || ing.quantity <= 0)                { setTemplateError('Todas las cantidades deben ser mayores a 0'); return }
     }
     if (editingTemplate) {
       updateTemplateMut.mutate({ id: editingTemplate.id, data: templateForm })
@@ -264,27 +287,69 @@ export default function Productions() {
           }}
           className="flex items-center gap-1 bg-amber-500 hover:bg-amber-600 text-white text-sm font-medium px-3 py-1.5 rounded-lg"
         >
-          <Plus size={16} /> {view === 'lotes' ? 'Nueva' : 'Nueva plantilla'}
+          <Plus size={16} /> {view === 'lotes' ? 'Nueva producción' : 'Nueva receta'}
         </button>
       </div>
 
+      {/* Banner: insumos insuficientes — resurtido auto-creado */}
+      {stockAlert && (
+        <div className="mb-4 bg-amber-50 border border-amber-300 rounded-xl p-4">
+          <div className="flex items-start justify-between gap-2">
+            <div className="flex-1">
+              <p className="text-amber-800 font-semibold text-sm mb-1">
+                No hay insumos suficientes para producir este lote
+              </p>
+              <p className="text-amber-700 text-sm mb-3">
+                El sistema ha creado el resurtido <span className="font-bold">{stockAlert.folio}</span> a bodega central
+                con los insumos faltantes. Una vez que compres y confirmes ese resurtido, podrás
+                confirmar este lote de producción.
+              </p>
+              <div className="space-y-2">
+                {stockAlert.items.map(w => (
+                  <div key={w.inventoryItemId} className="text-xs text-amber-700">
+                    <div className="flex flex-wrap gap-x-4 gap-y-0.5">
+                      <span className="font-semibold text-amber-900">{w.name}</span>
+                      <span>Necesario: <strong>{fmtQty(w.required, w.unitType)}</strong></span>
+                      <span>Disponible: <strong>{fmtQty(w.available, w.unitType)}</strong></span>
+                      <span className="text-red-600">Faltan: <strong>{fmtQty(w.missing, w.unitType)}</strong></span>
+                    </div>
+                    {w.containersNeeded != null && w.containerLabel && w.orderedQuantity != null && (
+                      <div className="mt-0.5 text-teal-700 bg-teal-50 rounded px-2 py-1">
+                        Se pedirán <strong>{w.containersNeeded} {w.containerLabel}{w.containersNeeded !== 1 ? 's' : ''}</strong>
+                        {' '}→ <strong>{fmtQty(w.orderedQuantity, w.unitType)}</strong>
+                        {w.orderedQuantity > w.missing && (
+                          <span className="text-slate-500"> (el sobrante queda en bodega)</span>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+            <button onClick={() => setStockAlert(null)} className="text-amber-500 hover:text-amber-700 shrink-0">
+              <X size={16} />
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Sub-tabs */}
       <div className="flex gap-1 bg-slate-100 rounded-xl p-1 w-fit mb-4">
-        <button
-          onClick={() => setView('lotes')}
-          className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-colors ${
-            view === 'lotes' ? 'bg-white text-amber-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'
-          }`}
-        >
-          Lotes
-        </button>
         <button
           onClick={() => setView('plantillas')}
           className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-colors flex items-center gap-1.5 ${
             view === 'plantillas' ? 'bg-white text-amber-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'
           }`}
         >
-          <BookOpen size={13} /> Plantillas
+          <BookOpen size={13} /> Recetas
+        </button>
+        <button
+          onClick={() => setView('lotes')}
+          className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-colors ${
+            view === 'lotes' ? 'bg-white text-amber-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'
+          }`}
+        >
+          Producciones
         </button>
       </div>
 
@@ -340,7 +405,8 @@ export default function Productions() {
           ) : templates.length === 0 ? (
             <div className="text-center py-12 text-slate-400">
               <BookOpen size={40} className="mx-auto mb-2 opacity-30" />
-              <p className="text-sm">Sin plantillas — crea la primera para agilizar tus lotes</p>
+              <p className="text-sm font-medium text-slate-500">Sin recetas todavía</p>
+              <p className="text-xs mt-1 max-w-xs mx-auto">Registra la receta de cada elaboración propia — ingredientes, gramajes y pasos opcionales. Desde aquí podrás iniciar producciones rápidamente.</p>
             </div>
           ) : (
             <div className="space-y-2">
@@ -399,23 +465,27 @@ export default function Productions() {
 
               {/* Artículo producido */}
               <div>
-                <label className="block text-xs font-medium text-slate-600 mb-1">Artículo producido</label>
+                <label className="block text-xs font-medium text-slate-600 mb-1">Elaboración a producir</label>
                 <select
                   className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-amber-400"
                   value={form.outputItemId || ''}
                   onChange={e => setForm(f => ({ ...f, outputItemId: Number(e.target.value) }))}
                 >
                   <option value="">Seleccionar...</option>
-                  {activeItems.map(i => <option key={i.id} value={i.id}>{i.name} ({i.unitType})</option>)}
+                  {producedItems.map(i => (
+                    <option key={i.id} value={i.id}>{i.name} ({unitLabel(i.unitType)})</option>
+                  ))}
                 </select>
               </div>
 
               {/* Cantidad */}
               <div>
                 <label className="block text-xs font-medium text-slate-600 mb-1">
-                  {activeTemplate
-                    ? `Cantidad a producir (${activeTemplate.baseYieldUnit})`
-                    : 'Cantidad producida'}
+                  Cantidad a producir
+                  {form.outputItemId > 0 && (() => {
+                    const u = producedItems.find(i => i.id === form.outputItemId)
+                    return u ? <span className="text-slate-400 font-normal ml-1">({unitLabel(u.unitType)})</span> : null
+                  })()}
                 </label>
                 <input type="number" min="0" step="0.001"
                   className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-amber-400"
@@ -436,10 +506,14 @@ export default function Productions() {
 
               {/* Fecha */}
               <div>
-                <label className="block text-xs font-medium text-slate-600 mb-1">Fecha de producción</label>
+                <label className="block text-xs font-medium text-slate-600 mb-1">
+                  Fecha de producción <span className="font-normal text-slate-400">(opcional)</span>
+                </label>
                 <input type="date"
                   className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-amber-400"
                   value={form.producedAt ?? ''}
+                  min={today()}
+                  max={maxProductionDate()}
                   onChange={e => setForm(f => ({ ...f, producedAt: e.target.value }))}
                 />
               </div>
@@ -504,7 +578,7 @@ export default function Productions() {
           <div className="bg-white w-full sm:max-w-lg rounded-t-2xl sm:rounded-2xl max-h-[90vh] overflow-y-auto">
             <div className="sticky top-0 bg-white border-b border-slate-100 px-4 py-3 flex items-center justify-between">
               <h2 className="font-bold text-slate-800 truncate">{selected.outputItemName}</h2>
-              <button onClick={() => { setSelected(null); setError('') }}><X size={20} /></button>
+              <button onClick={() => { setSelected(null); setError(''); setPendingAction(null) }}><X size={20} /></button>
             </div>
 
             <div className="p-4 space-y-4">
@@ -557,23 +631,84 @@ export default function Productions() {
                 </div>
               </div>
 
+              {selected.status === 'CANCELLED' && selected.cancelReason && (
+                <div className="bg-red-50 border border-red-200 rounded-xl px-4 py-3">
+                  <p className="text-xs font-semibold text-red-700 mb-1">Motivo de cancelación</p>
+                  <p className="text-sm text-red-800">{selected.cancelReason}</p>
+                </div>
+              )}
+
               <div className="flex gap-2 pt-1">
                 {selected.status === 'DRAFT' && (
                   <>
-                    <button onClick={() => confirmMut.mutate(selected.id)} disabled={confirmMut.isPending}
-                      className="flex-1 flex items-center justify-center gap-1.5 bg-emerald-500 hover:bg-emerald-600 disabled:opacity-50 text-white font-semibold py-2.5 rounded-xl text-sm">
-                      <CheckCircle2 size={16} />
-                      {confirmMut.isPending ? 'Confirmando...' : 'Confirmar producción'}
-                    </button>
-                    <button onClick={() => deleteMut.mutate(selected.id)} disabled={deleteMut.isPending}
-                      className="flex items-center justify-center bg-red-50 hover:bg-red-100 text-red-600 font-semibold py-2.5 px-3 rounded-xl text-sm">
-                      <Trash2 size={16} />
-                    </button>
+                    {pendingAction === 'confirm' ? (
+                      <div className="flex-1 bg-emerald-50 border border-emerald-200 rounded-xl px-3 py-2.5">
+                        <p className="text-sm font-medium text-emerald-800 mb-2">
+                          ¿Confirmar producción? Se descontarán los ingredientes del inventario y no podrá deshacerse.
+                        </p>
+                        <div className="flex gap-2">
+                          <button
+                            onClick={() => { confirmMut.mutate(selected.id); setPendingAction(null) }}
+                            disabled={confirmMut.isPending}
+                            className="flex-1 bg-emerald-500 hover:bg-emerald-600 disabled:opacity-50 text-white font-semibold py-2 rounded-lg text-sm"
+                          >
+                            {confirmMut.isPending ? 'Confirmando...' : 'Sí, confirmar'}
+                          </button>
+                          <button
+                            onClick={() => setPendingAction(null)}
+                            className="flex-1 bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 font-semibold py-2 rounded-lg text-sm"
+                          >
+                            Cancelar
+                          </button>
+                        </div>
+                      </div>
+                    ) : pendingAction === 'delete' ? (
+                      <div className="flex-1 bg-red-50 border border-red-200 rounded-xl px-3 py-2.5">
+                        <p className="text-sm font-medium text-red-800 mb-2">
+                          ¿Eliminar este borrador? Esta acción no puede deshacerse.
+                        </p>
+                        <div className="flex gap-2">
+                          <button
+                            onClick={() => { deleteMut.mutate(selected.id); setPendingAction(null) }}
+                            disabled={deleteMut.isPending}
+                            className="flex-1 bg-red-500 hover:bg-red-600 disabled:opacity-50 text-white font-semibold py-2 rounded-lg text-sm"
+                          >
+                            {deleteMut.isPending ? 'Eliminando...' : 'Sí, eliminar'}
+                          </button>
+                          <button
+                            onClick={() => setPendingAction(null)}
+                            className="flex-1 bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 font-semibold py-2 rounded-lg text-sm"
+                          >
+                            Cancelar
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <>
+                        <button
+                          onClick={() => setPendingAction('confirm')}
+                          className="flex-1 flex items-center justify-center gap-1.5 bg-emerald-500 hover:bg-emerald-600 text-white font-semibold py-2.5 rounded-xl text-sm"
+                        >
+                          <CheckCircle2 size={16} /> Confirmar producción
+                        </button>
+                        <button
+                          onClick={() => setPendingAction('delete')}
+                          className="flex items-center justify-center bg-red-50 hover:bg-red-100 text-red-600 font-semibold py-2.5 px-3 rounded-xl text-sm"
+                        >
+                          <Trash2 size={16} />
+                        </button>
+                      </>
+                    )}
                   </>
                 )}
                 {selected.status === 'CONFIRMED' && (
                   <p className="text-sm text-emerald-600 text-center w-full py-2 font-medium">
                     Producción confirmada — inventario actualizado
+                  </p>
+                )}
+                {selected.status === 'CANCELLED' && (
+                  <p className="text-sm text-red-500 text-center w-full py-2 font-medium">
+                    Producción cancelada — sin cambios en inventario
                   </p>
                 )}
               </div>
@@ -683,78 +818,116 @@ export default function Productions() {
 
               {/* Nombre */}
               <div>
-                <label className="block text-xs font-medium text-slate-600 mb-1">Nombre de la elaboración</label>
-                <input type="text" placeholder="Ej. Esquites estilo la casa"
+                <label className="block text-xs font-medium text-slate-600 mb-1">Nombre de la receta</label>
+                <input type="text" placeholder="Ej. Esquite hervido estilo la casa"
                   className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-amber-400"
                   value={templateForm.name}
                   onChange={e => setTemplateForm(f => ({ ...f, name: e.target.value }))}
                 />
               </div>
 
-              {/* Artículo que produce */}
+              {/* Elaboración que produce */}
               <div>
-                <label className="block text-xs font-medium text-slate-600 mb-1">Artículo que produce</label>
+                <label className="block text-xs font-medium text-slate-600 mb-1">Elaboración que produce</label>
                 <select
                   className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-amber-400"
                   value={templateForm.outputItemId || ''}
-                  onChange={e => setTemplateForm(f => ({ ...f, outputItemId: Number(e.target.value) }))}
+                  onChange={e => {
+                    const id = Number(e.target.value)
+                    const item = producedItems.find(i => i.id === id)
+                    setTemplateForm(f => ({
+                      ...f,
+                      outputItemId: id,
+                      baseYieldUnit: item ? unitLabel(item.unitType) : f.baseYieldUnit,
+                    }))
+                  }}
                 >
                   <option value="">Seleccionar...</option>
-                  {activeItems.map(i => <option key={i.id} value={i.id}>{i.name} ({i.unitType})</option>)}
+                  {producedItems.map(i => (
+                    <option key={i.id} value={i.id}>{i.name} ({unitLabel(i.unitType)})</option>
+                  ))}
                 </select>
+                {producedItems.length === 0 && (
+                  <p className="text-xs text-amber-600 mt-1">
+                    Primero registra insumos de tipo "Elaboración propia" en el módulo de Inventario.
+                  </p>
+                )}
               </div>
 
               {/* Rendimiento base */}
-              <div className="flex gap-3">
-                <div className="flex-1">
-                  <label className="block text-xs font-medium text-slate-600 mb-1">Rendimiento base</label>
-                  <input type="number" min="0" step="0.001" placeholder="10"
-                    className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-amber-400"
+              <div>
+                <label className="block text-xs font-medium text-slate-600 mb-1">
+                  Esta receta rinde
+                </label>
+                <div className="flex gap-2 items-center">
+                  <input type="number" min="0" step="0.001" placeholder="Ej. 1000"
+                    className="flex-1 border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-amber-400"
                     value={templateForm.baseYield || ''}
                     onChange={e => setTemplateForm(f => ({ ...f, baseYield: Number(e.target.value) }))}
                   />
-                </div>
-                <div className="w-36">
-                  <label className="block text-xs font-medium text-slate-600 mb-1">Unidad</label>
-                  <input type="text" placeholder="porciones"
-                    className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-amber-400"
+                  <select
+                    className="border border-slate-300 rounded-lg px-2 py-2 text-sm font-medium text-slate-700 focus:outline-none focus:ring-2 focus:ring-amber-400 bg-white"
                     value={templateForm.baseYieldUnit}
                     onChange={e => setTemplateForm(f => ({ ...f, baseYieldUnit: e.target.value }))}
-                  />
+                  >
+                    <option value="ml">ml</option>
+                    <option value="g">g</option>
+                    <option value="pza">pza</option>
+                    <option value="porciones">porciones</option>
+                  </select>
                 </div>
+                <p className="text-xs text-slate-400 mt-1">
+                  Indica cuánto produce seguir esta receta completa. Al registrar una producción podrás escalar la cantidad.
+                </p>
               </div>
 
-              {/* Ingredientes */}
+              {/* Ingredientes (opcionales) */}
               <div>
-                <div className="flex items-center justify-between mb-2">
-                  <label className="text-xs font-medium text-slate-600">Ingredientes</label>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="text-xs font-medium text-slate-600">
+                    Insumos / ingredientes <span className="font-normal text-slate-400">(opcional)</span>
+                  </label>
                   <button onClick={addTemplateIngredient}
                     className="text-xs text-amber-600 font-medium flex items-center gap-1 hover:underline">
                     <Plus size={13} /> Agregar
                   </button>
                 </div>
                 {templateForm.ingredients.length === 0 ? (
-                  <p className="text-xs text-slate-400 text-center py-3 border border-dashed border-slate-200 rounded-lg">Sin ingredientes</p>
+                  <div className="text-xs text-slate-400 text-center py-3 border border-dashed border-slate-200 rounded-lg space-y-0.5">
+                    <p>Sin ingredientes — puedes agregar después</p>
+                    <p className="text-slate-300">Si la receta es privada, puedes omitirlos</p>
+                  </div>
                 ) : (
                   <div className="space-y-2">
-                    {templateForm.ingredients.map((ing, idx) => (
-                      <div key={idx} className="flex gap-2 items-center">
-                        <select
-                          className="flex-1 border border-slate-300 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-amber-400"
-                          value={ing.inventoryItemId || ''}
-                          onChange={e => setTemplateIngredient(idx, { inventoryItemId: Number(e.target.value) })}>
-                          <option value="">Insumo...</option>
-                          {activeItems.map(i => <option key={i.id} value={i.id}>{i.name}</option>)}
-                        </select>
-                        <input type="number" min="0" step="0.001" placeholder="Qty"
-                          className="w-24 border border-slate-300 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-amber-400"
-                          value={ing.quantity || ''}
-                          onChange={e => setTemplateIngredient(idx, { quantity: Number(e.target.value) })} />
-                        <button onClick={() => removeTemplateIngredient(idx)} className="text-red-400 hover:text-red-600">
-                          <X size={16} />
-                        </button>
-                      </div>
-                    ))}
+                    {templateForm.ingredients.map((ing, idx) => {
+                      const selected = purchasedItems.find(i => i.id === ing.inventoryItemId)
+                      return (
+                        <div key={idx} className="flex gap-2 items-center">
+                          <select
+                            className="flex-1 border border-slate-300 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-amber-400"
+                            value={ing.inventoryItemId || ''}
+                            onChange={e => setTemplateIngredient(idx, { inventoryItemId: Number(e.target.value) })}>
+                            <option value="">Insumo...</option>
+                            {purchasedItems.map(i => <option key={i.id} value={i.id}>{i.name}</option>)}
+                          </select>
+                          <div className="relative w-28">
+                            <input type="number" min="0" step="0.001"
+                              placeholder="Cant."
+                              className="w-full border border-slate-300 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-amber-400 pr-7"
+                              value={ing.quantity || ''}
+                              onChange={e => setTemplateIngredient(idx, { quantity: Number(e.target.value) })} />
+                            {selected && (
+                              <span className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-slate-400 pointer-events-none">
+                                {unitLabel(selected.unitType)}
+                              </span>
+                            )}
+                          </div>
+                          <button onClick={() => removeTemplateIngredient(idx)} className="text-red-400 hover:text-red-600 shrink-0">
+                            <X size={16} />
+                          </button>
+                        </div>
+                      )
+                    })}
                   </div>
                 )}
               </div>

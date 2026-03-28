@@ -1,17 +1,18 @@
-import { useState } from 'react'
+import React, { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   getPurchaseOrders, createPurchaseOrder, updatePurchaseOrder,
   confirmPurchaseOrder, cancelPurchaseOrder, getPurchaseSuggestions,
 } from '../api/purchaseOrders'
 import { getInventory } from '../api/inventory'
+import { getCashAccount } from '../api/cashAccount'
 import type {
   PurchaseOrder, PurchaseOrderStatus, PurchaseOrderItemRequest, UnitType,
-  PurchaseSuggestionItem, SuggestionUrgency,
+  SuggestionUrgency, InventoryItem,
 } from '../types'
 import {
   Plus, X, CheckCircle, XCircle, Eye, ShoppingBag, Trash2,
-  Sparkles, AlertTriangle, TrendingUp, Info, Pencil, Save, ArrowRight,
+  Sparkles, AlertTriangle, TrendingUp, Info, Pencil, Save, ArrowRight, PackagePlus,
 } from 'lucide-react'
 
 const UNIT_LABELS: Record<string, string> = {
@@ -20,12 +21,12 @@ const UNIT_LABELS: Record<string, string> = {
 }
 
 const STATUS_CONFIG: Record<PurchaseOrderStatus, { label: string; className: string }> = {
-  DRAFT:     { label: 'Borrador',   className: 'bg-amber-100 text-amber-700' },
+  DRAFT:     { label: 'Lista de compra pendiente', className: 'bg-amber-100 text-amber-700' },
   CONFIRMED: { label: 'Confirmado', className: 'bg-green-100 text-green-700' },
   CANCELLED: { label: 'Cancelado',  className: 'bg-slate-100 text-slate-500' },
 }
 
-const URGENCY_CONFIG: Record<SuggestionUrgency, { label: string; className: string; icon: JSX.Element }> = {
+const URGENCY_CONFIG: Record<SuggestionUrgency, { label: string; className: string; icon: React.ReactElement }> = {
   CRITICAL: { label: 'Crítico',   className: 'bg-red-100 text-red-700',    icon: <AlertTriangle size={11} /> },
   LOW:      { label: 'Bajo',      className: 'bg-amber-100 text-amber-700', icon: <AlertTriangle size={11} /> },
   NORMAL:   { label: 'Normal',    className: 'bg-blue-100 text-blue-700',   icon: <TrendingUp size={11} /> },
@@ -56,10 +57,17 @@ export default function PurchaseOrders() {
     queryFn: getPurchaseOrders,
   })
 
-  const { data: inventoryItems = [] } = useQuery({
+  const { data: inventoryItems = [] } = useQuery<InventoryItem[]>({
     queryKey: ['inventory'],
-    queryFn: getInventory,
+    queryFn: () => getInventory(),
   })
+
+  const { data: cashAccount } = useQuery({
+    queryKey: ['cash-account'],
+    queryFn: getCashAccount,
+  })
+  const cashBalance = cashAccount?.currentBalance ?? 0
+  const lowCash = cashBalance < 1000
 
   // ── Modals state ─────────────────────────────────────────────────────────────
   const [createOpen, setCreateOpen]   = useState(false)
@@ -74,7 +82,13 @@ export default function PurchaseOrders() {
   const [editNotes, setEditNotes]         = useState('')
 
   const openEdit = (order: PurchaseOrder) => {
-    setEditPrices(order.items.map((it) => (it.unitCost * it.quantity).toFixed(2)))
+    setEditPrices(order.items.map((it) => {
+      if (it.unitCost > 0) return (it.unitCost * it.quantity).toFixed(2)
+      // Si no hay precio registrado, pre-carga el costo promedio del insumo como referencia
+      const invItem = inventoryItems.find(i => i.id === it.inventoryItemId)
+      const avgCost = invItem?.averageCost ?? 0
+      return avgCost > 0 ? (avgCost * it.quantity).toFixed(2) : ''
+    }))
     setEditQtys(order.items.map((it) => String(it.quantity)))
     setEditSupplier(order.supplier ?? '')
     setEditNotes(order.notes ?? '')
@@ -83,13 +97,12 @@ export default function PurchaseOrders() {
 
   const closeEdit = () => setEditMode(false)
 
-  const closeDetail = () => { setDetailOrder(null); setEditMode(false) }
+  const closeDetail = () => { setDetailOrder(null); setEditMode(false); setConfirmError(null) }
 
   // ── Create form state ─────────────────────────────────────────────────────────
   const [supplier, setSupplier]     = useState('')
   const [notes, setNotes]           = useState('')
   const [lines, setLines]           = useState<PurchaseOrderItemRequest[]>([emptyLine()])
-  const [linePrices, setLinePrices] = useState<string[]>([''])
   // Metadata de sugerido para mostrar badge por línea (null = línea manual)
   const [lineSources, setLineSources] = useState<LineSource[]>([null])
 
@@ -97,8 +110,22 @@ export default function PurchaseOrders() {
   const [isLoadingSugg, setIsLoadingSugg]     = useState(false)
   const [suggError, setSuggError]             = useState<string | null>(null)
   const [suggFilledCount, setSuggFilledCount] = useState<number | null>(null)
-  const [missingPriceCount, setMissingPriceCount] = useState(0)
   const [activeMultiplier, setActiveMultiplier]   = useState<1 | 1.2 | null>(null)
+
+  // ── Confirm error state ───────────────────────────────────────────────────────
+  const [confirmError, setConfirmError] = useState<string | null>(null)
+
+  // ── Quick-confirm modal ───────────────────────────────────────────────────────
+  const [quickConfirmOrder, setQuickConfirmOrder] = useState<PurchaseOrder | null>(null)
+
+  const openQuickConfirm = (order: PurchaseOrder) => {
+    setConfirmError(null)
+    setQuickConfirmOrder(order)
+  }
+
+  // ── Cancel confirmation modal ─────────────────────────────────────────────────
+  const [cancelTargetId, setCancelTargetId] = useState<number | null>(null)
+  const [cancelReason, setCancelReason]     = useState('')
 
   // ── Mutations ─────────────────────────────────────────────────────────────────
   const createMut = useMutation({
@@ -139,14 +166,24 @@ export default function PurchaseOrders() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['purchase-orders'] })
       qc.invalidateQueries({ queryKey: ['inventory'] })
+      qc.invalidateQueries({ queryKey: ['cash-account'] })
+      setConfirmError(null)
+      setQuickConfirmOrder(null)
       closeDetail()
+    },
+    onError: (err: unknown) => {
+      const msg = (err as { response?: { data?: { message?: string } } })
+        ?.response?.data?.message ?? 'No se pudo confirmar el resurtido.'
+      setConfirmError(msg)
     },
   })
 
   const cancelMut = useMutation({
-    mutationFn: (id: number) => cancelPurchaseOrder(id),
+    mutationFn: ({ id, reason }: { id: number; reason: string }) => cancelPurchaseOrder(id, reason),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['purchase-orders'] })
+      setCancelTargetId(null)
+      setCancelReason('')
       closeDetail()
     },
   })
@@ -156,11 +193,9 @@ export default function PurchaseOrders() {
     setSupplier('')
     setNotes('')
     setLines([emptyLine()])
-    setLinePrices([''])
     setLineSources([null])
     setSuggFilledCount(null)
     setSuggError(null)
-    setMissingPriceCount(0)
     setActiveMultiplier(null)
     setCreateOpen(false)
   }
@@ -168,35 +203,55 @@ export default function PurchaseOrders() {
   const updateLine = (i: number, patch: Partial<PurchaseOrderItemRequest>) =>
     setLines((prev) => prev.map((l, idx) => idx === i ? { ...l, ...patch } : l))
 
-  const updateLinePrice = (i: number, totalPrice: string) => {
-    setLinePrices((prev) => prev.map((p, idx) => idx === i ? totalPrice : p))
-    const price = parseFloat(totalPrice)
-    const qty   = lines[i]?.quantity
-    if (price > 0 && qty > 0) {
-      updateLine(i, { unitCost: price / qty })
-    }
-  }
-
   const removeLine = (i: number) => {
     setLines((prev) => prev.filter((_, idx) => idx !== i))
-    setLinePrices((prev) => prev.filter((_, idx) => idx !== i))
     setLineSources((prev) => prev.filter((_, idx) => idx !== i))
   }
 
   const addEmptyLine = () => {
     setLines((prev) => [...prev, emptyLine()])
-    setLinePrices((prev) => [...prev, ''])
     setLineSources((prev) => [...prev, null])
   }
 
-  const totalAmount = linePrices.reduce((sum, p, i) => {
-    const price = parseFloat(p)
-    return sum + (price > 0 && lines[i]?.inventoryItemId > 0 ? price : 0)
-  }, 0)
-
   const canCreate = lines.length > 0 && lines.every(
-    (l, i) => l.inventoryItemId > 0 && l.quantity > 0 && parseFloat(linePrices[i] ?? '') > 0,
+    (l) => l.inventoryItemId > 0 && l.quantity > 0,
   )
+
+  // ── Primera carga: insumos en cero ───────────────────────────────────────────
+  const [firstLoadSkipped, setFirstLoadSkipped] = useState<number | null>(null)
+
+  const applyFirstLoad = () => {
+    setSuggError(null)
+    setSuggFilledCount(null)
+    setActiveMultiplier(null)
+    setFirstLoadSkipped(null)
+
+    const purchasedItems = inventoryItems.filter(i => i.active && (i.itemType ?? 'PURCHASED') === 'PURCHASED')
+    const zeroItems  = purchasedItems.filter(i => (i.currentStock ?? 0) === 0)
+    const skipped    = purchasedItems.length - zeroItems.length
+
+    if (zeroItems.length === 0) {
+      setSuggError('Todos tus insumos ya tienen stock en bodega. Usa "Sugerido exacto" para reabastecer.')
+      return
+    }
+
+    const newLines: PurchaseOrderItemRequest[] = zeroItems.map(item => ({
+      inventoryItemId: item.id,
+      quantity: item.minimumStock && item.minimumStock > 0 ? item.minimumStock : 1,
+      unitCost: 0,
+    }))
+    const newSources: LineSource[] = zeroItems.map(item => ({
+      urgency: 'NO_DATA' as SuggestionUrgency,
+      daysRemaining: null,
+      containerSize: item.containerSize ?? undefined,
+      containerLabel: item.containerLabel ?? undefined,
+    }))
+
+    setLines(newLines)
+    setLineSources(newSources)
+    setSuggFilledCount(zeroItems.length)
+    setFirstLoadSkipped(skipped)
+  }
 
   // ── Auto-fill from suggestions ────────────────────────────────────────────────
   const applySuggestions = async (multiplier: 1 | 1.2) => {
@@ -209,18 +264,14 @@ export default function PurchaseOrders() {
       const data = await getPurchaseSuggestions()
 
       if (data.items.length === 0) {
-        setSuggError('El sistema no detecta insumos que necesiten reabastecerse ahora.')
+        setSuggError('Sin ventas registradas aún. Usa Primera carga para arrancar tu inventario — los botones de sugerido empezarán a funcionar después de tu primer ciclo de ventas.')
         return
       }
 
       const newLines: PurchaseOrderItemRequest[] = []
-      const newPrices: string[] = []
       const newSources: LineSource[] = []
-      let noPriceCount = 0
 
       for (const item of data.items) {
-        // Si hay presentación configurada, la cantidad SIEMPRE es containers × containerSize
-        // para garantizar consistencia entre el badge y el campo de cantidad.
         let qty: number
         let containers: number | undefined
         if (item.containersNeeded != null && item.containerSize != null) {
@@ -230,11 +281,7 @@ export default function PurchaseOrders() {
           qty = Math.ceil(item.suggestedQuantity * multiplier)
         }
 
-        const cost  = item.lastUnitCost ?? 0
-        const total = cost > 0 ? parseFloat((qty * cost).toFixed(2)) : 0
-
-        newLines.push({ inventoryItemId: item.inventoryItemId, quantity: qty, unitCost: cost })
-        newPrices.push(total > 0 ? String(total) : '')
+        newLines.push({ inventoryItemId: item.inventoryItemId, quantity: qty, unitCost: 0 })
         newSources.push({
           urgency: item.urgency,
           daysRemaining: item.estimatedDaysRemaining,
@@ -242,15 +289,11 @@ export default function PurchaseOrders() {
           containerLabel: item.containerLabel,
           containersNeeded: containers,
         })
-
-        if (cost === 0) noPriceCount++
       }
 
       setLines(newLines)
-      setLinePrices(newPrices)
       setLineSources(newSources)
       setSuggFilledCount(data.items.length)
-      setMissingPriceCount(noPriceCount)
       setActiveMultiplier(multiplier)
     } catch {
       setSuggError('No se pudo obtener los sugeridos. Intenta de nuevo.')
@@ -297,6 +340,22 @@ export default function PurchaseOrders() {
         </div>
       )}
 
+      {/* Alerta saldo bajo en caja general */}
+      {lowCash && (
+        <div className="bg-red-50 border border-red-200 rounded-xl p-4 flex items-start gap-3">
+          <div className="w-8 h-8 rounded-full bg-red-100 flex items-center justify-center shrink-0 mt-0.5">
+            <AlertTriangle size={16} className="text-red-600" />
+          </div>
+          <div>
+            <p className="text-sm font-semibold text-red-700">Saldo bajo en caja general</p>
+            <p className="text-xs text-red-600 mt-0.5">
+              Balance del negocio: <strong>{cashBalance.toLocaleString('es-MX', { style: 'currency', currency: 'MXN' })}</strong>.
+              {' '}Registra una aportación del dueño o un depósito en <strong>Caja</strong> antes de confirmar resurtidos.
+            </p>
+          </div>
+        </div>
+      )}
+
       {/* Orders list */}
       <div className="space-y-3">
         {orders.map((order) => {
@@ -336,14 +395,13 @@ export default function PurchaseOrders() {
                 {order.status === 'DRAFT' && (
                   <>
                     <button
-                      onClick={() => confirmMut.mutate(order.id)}
-                      disabled={confirmMut.isPending}
-                      className="flex items-center gap-1 text-xs bg-green-50 hover:bg-green-100 text-green-700 font-medium py-1.5 px-3 rounded-lg transition-colors disabled:opacity-50"
+                      onClick={() => openQuickConfirm(order)}
+                      className="flex items-center gap-1 text-xs bg-green-50 hover:bg-green-100 text-green-700 font-medium py-1.5 px-3 rounded-lg transition-colors"
                     >
                       <CheckCircle size={13} /> Confirmar
                     </button>
                     <button
-                      onClick={() => cancelMut.mutate(order.id)}
+                      onClick={() => { setCancelTargetId(order.id); setCancelReason('') }}
                       disabled={cancelMut.isPending}
                       className="flex items-center gap-1 text-xs bg-red-50 hover:bg-red-100 text-red-600 font-medium py-1.5 px-3 rounded-lg transition-colors disabled:opacity-50"
                     >
@@ -374,11 +432,13 @@ export default function PurchaseOrders() {
 
             {/* ── Suggestion panel ──────────────────────────────────────────── */}
             <div className="mb-4 rounded-xl border border-violet-200 bg-violet-50 px-4 py-3">
-              <div className="flex items-center gap-2 mb-2">
+              <div className="flex items-center gap-2 mb-1">
                 <Sparkles size={15} className="text-violet-600 shrink-0" />
                 <span className="text-sm font-semibold text-violet-800">Rellenar automáticamente</span>
-                <span className="text-xs text-violet-500 ml-auto">Basado en los últimos 30 días</span>
               </div>
+              <p className="text-xs text-violet-500 mb-2">
+                Los cálculos se basan en ventas históricas — por ahora mira 30 días atrás, pero cuando pase un año lo natural es que compare contra el mismo mes del año anterior.
+              </p>
 
               <div className="flex gap-2 flex-wrap">
                 <button
@@ -411,6 +471,14 @@ export default function PurchaseOrders() {
                   }
                   Sugerido +20%
                 </button>
+                <button
+                  onClick={applyFirstLoad}
+                  disabled={isLoadingSugg}
+                  className="flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-lg transition-colors disabled:opacity-60 bg-amber-500 hover:bg-amber-600 text-white"
+                >
+                  <PackagePlus size={13} />
+                  Cargar insumos agotados
+                </button>
               </div>
 
               {/* Feedback messages */}
@@ -419,9 +487,9 @@ export default function PurchaseOrders() {
                   <CheckCircle size={13} className="text-green-600 mt-0.5 shrink-0" />
                   <p className="text-xs text-green-700">
                     {suggFilledCount} insumo{suggFilledCount !== 1 ? 's' : ''} cargado{suggFilledCount !== 1 ? 's' : ''}.
-                    {missingPriceCount > 0 && (
-                      <span className="text-amber-600 ml-1">
-                        {missingPriceCount} sin precio anterior — completa el campo «Precio total».
+                    {firstLoadSkipped !== null && firstLoadSkipped > 0 && (
+                      <span className="text-slate-500 ml-1">
+                        ({firstLoadSkipped} ya ten{firstLoadSkipped !== 1 ? 'ían' : 'ía'} stock, omitido{firstLoadSkipped !== 1 ? 's' : ''})
                       </span>
                     )}
                   </p>
@@ -476,8 +544,6 @@ export default function PurchaseOrders() {
                   {lines.map((line, i) => {
                     const selectedItem = inventoryItems.find((it) => it.id === line.inventoryItemId)
                     const unitLabel    = selectedItem ? (UNIT_LABELS[selectedItem.unitType as UnitType] ?? '') : ''
-                    const totalPrice   = parseFloat(linePrices[i] ?? '')
-                    const unitCost     = totalPrice > 0 && line.quantity > 0 ? totalPrice / line.quantity : null
                     const source       = lineSources[i]
 
                     return (
@@ -505,48 +571,19 @@ export default function PurchaseOrders() {
                           </button>
                         </div>
 
-                        {/* Fila 2: cantidad + precio total */}
-                        <div className="grid grid-cols-2 gap-2">
-                          <div>
-                            <label className="text-xs text-slate-500 block mb-1">
-                              Cantidad {unitLabel && <span className="text-slate-400">({unitLabel})</span>}
-                            </label>
-                            <input
-                              type="number" min="0" step="1"
-                              value={line.quantity || ''}
-                              onChange={(e) => {
-                                const qty   = parseFloat(e.target.value) || 0
-                                const price = parseFloat(linePrices[i] ?? '')
-                                updateLine(i, { quantity: qty, unitCost: price > 0 && qty > 0 ? price / qty : 0 })
-                              }}
-                              placeholder="0"
-                              className="w-full border border-slate-300 bg-white rounded-lg px-2 py-2 text-sm focus:outline-none focus:border-violet-500"
-                            />
-                          </div>
-                          <div>
-                            <label className="text-xs text-slate-500 block mb-1">Precio total $</label>
-                            <input
-                              type="number" min="0" step="0.01"
-                              value={linePrices[i] ?? ''}
-                              onChange={(e) => updateLinePrice(i, e.target.value)}
-                              placeholder="lo que pagaste"
-                              className={`w-full border rounded-lg px-2 py-2 text-sm focus:outline-none focus:border-violet-500 ${
-                                source && !linePrices[i]
-                                  ? 'border-amber-300 bg-amber-50 placeholder:text-amber-400'
-                                  : 'border-slate-300 bg-white'
-                              }`}
-                            />
-                          </div>
+                        {/* Fila 2: cantidad */}
+                        <div>
+                          <label className="text-xs text-slate-500 block mb-1">
+                            Cantidad {unitLabel && <span className="text-slate-400">({unitLabel})</span>}
+                          </label>
+                          <input
+                            type="number" min="0" step="1"
+                            value={line.quantity || ''}
+                            onChange={(e) => updateLine(i, { quantity: parseFloat(e.target.value) || 0 })}
+                            placeholder="0"
+                            className="w-full border border-slate-300 bg-white rounded-lg px-2 py-2 text-sm focus:outline-none focus:border-violet-500"
+                          />
                         </div>
-
-                        {/* Fila 3: costo por unidad calculado */}
-                        {unitCost !== null && (
-                          <div className="flex items-center justify-end">
-                            <span className="text-xs text-violet-700 font-medium bg-violet-50 border border-violet-100 rounded-lg px-2.5 py-1">
-                              ${unitCost.toFixed(4)} / {unitLabel || 'u'}
-                            </span>
-                          </div>
-                        )}
 
                         {/* Fila 4: badges de urgencia y presentación */}
                         {source && (
@@ -573,13 +610,6 @@ export default function PurchaseOrders() {
                 </div>
               </div>
 
-              {/* Total */}
-              <div className="flex justify-end border-t border-slate-100 pt-3">
-                <div className="text-right">
-                  <p className="text-xs text-slate-400">Total del resurtido</p>
-                  <p className="text-xl font-bold text-slate-800">{fmt(totalAmount)}</p>
-                </div>
-              </div>
             </div>
 
             <div className="flex gap-3 mt-5">
@@ -594,7 +624,7 @@ export default function PurchaseOrders() {
                 disabled={!canCreate || createMut.isPending}
                 className="flex-1 bg-violet-600 hover:bg-violet-700 disabled:opacity-50 text-white text-sm font-semibold py-2 rounded-lg"
               >
-                {createMut.isPending ? 'Guardando...' : 'Guardar borrador'}
+                {createMut.isPending ? 'Guardando...' : 'Guardar lista de compra'}
               </button>
             </div>
           </div>
@@ -676,12 +706,22 @@ export default function PurchaseOrders() {
                   )
                 }
                 // Vista de edición — tarjeta
-                const qty   = parseFloat(editQtys[i] ?? '0') || 0
-                const total = parseFloat(editPrices[i] ?? '0') || 0
-                const uc    = qty > 0 && total > 0 ? total / qty : null
+                const qty        = parseFloat(editQtys[i] ?? '0') || 0
+                const total      = parseFloat(editPrices[i] ?? '0') || 0
+                const uc         = qty > 0 && total > 0 ? total / qty : null
+                const hasHistory = item.unitCost === 0
+                  && (inventoryItems.find(it2 => it2.id === item.inventoryItemId)?.averageCost ?? 0) > 0
+                const prefilled  = hasHistory && (editPrices[i] ?? '') !== ''
                 return (
                   <div key={item.id} className="rounded-xl border border-amber-200 bg-amber-50 p-3 space-y-2">
-                    <p className="font-semibold text-slate-800 text-sm">{item.inventoryItemName}</p>
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="font-semibold text-slate-800 text-sm">{item.inventoryItemName}</p>
+                      {prefilled && (
+                        <span className="text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-violet-100 text-violet-700 shrink-0">
+                          Precio sugerido
+                        </span>
+                      )}
+                    </div>
                     <div className="grid grid-cols-2 gap-2">
                       <div>
                         <label className="text-xs text-slate-500 block mb-1">Cantidad ({unitLabel})</label>
@@ -695,12 +735,20 @@ export default function PurchaseOrders() {
                         <input type="number" min="0" step="0.01"
                           value={editPrices[i] ?? ''}
                           onChange={(e) => setEditPrices((prev) => prev.map((v, idx) => idx === i ? e.target.value : v))}
-                          className="w-full border border-slate-300 bg-white rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:border-amber-400" />
+                          placeholder={hasHistory ? undefined : 'Sin historial aún'}
+                          className={`w-full border rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:border-amber-400 ${
+                            prefilled ? 'border-violet-300 bg-violet-50' : 'border-slate-300 bg-white'
+                          }`} />
                       </div>
                     </div>
                     {uc !== null && (
                       <p className="text-xs text-right text-violet-700 font-medium">
                         ${uc.toFixed(4)}/{unitLabel}
+                      </p>
+                    )}
+                    {!hasHistory && !prefilled && (editPrices[i] ?? '') === '' && (
+                      <p className="text-[10px] text-slate-400">
+                        En futuros resurtidos se mostrará aquí el precio del último resurtido confirmado como referencia.
                       </p>
                     )}
                   </div>
@@ -721,30 +769,69 @@ export default function PurchaseOrders() {
             </div>
 
             {/* Acciones */}
-            {detailOrder.status === 'DRAFT' && !editMode && (
-              <div className="flex gap-2 mt-4 flex-wrap">
-                <button
-                  onClick={() => openEdit(detailOrder)}
-                  className="flex items-center gap-1.5 border border-amber-300 text-amber-700 text-sm font-medium py-2 px-4 rounded-lg hover:bg-amber-50 transition-colors"
-                >
-                  <Pencil size={14} /> Actualizar precios
-                </button>
-                <button
-                  onClick={() => cancelMut.mutate(detailOrder.id)}
-                  disabled={cancelMut.isPending}
-                  className="flex items-center gap-1.5 border border-red-300 text-red-600 text-sm font-medium py-2 px-4 rounded-lg hover:bg-red-50 disabled:opacity-50 transition-colors"
-                >
-                  <XCircle size={14} /> Cancelar
-                </button>
-                <button
-                  onClick={() => confirmMut.mutate(detailOrder.id)}
-                  disabled={confirmMut.isPending}
-                  className="flex-1 flex items-center justify-center gap-1.5 bg-green-600 hover:bg-green-700 text-white text-sm font-semibold py-2 px-4 rounded-lg disabled:opacity-50 transition-colors"
-                >
-                  <CheckCircle size={14} /> {confirmMut.isPending ? 'Confirmando...' : 'Confirmar resurtido'}
-                </button>
-              </div>
-            )}
+            {detailOrder.status === 'DRAFT' && !editMode && (() => {
+              const zeroPriceItems = detailOrder.items.filter(it => !it.unitCost || it.unitCost === 0)
+              const hasZeroPrice   = zeroPriceItems.length > 0
+              const shortfall      = detailOrder.totalAmount - cashBalance
+              const insufficient   = !hasZeroPrice && shortfall > 0
+              const canConfirm     = !hasZeroPrice && !insufficient
+              return (
+                <div className="mt-4 space-y-2">
+                  {hasZeroPrice && (
+                    <div className="flex items-start gap-1.5 rounded-lg bg-amber-50 border border-amber-200 px-3 py-2">
+                      <AlertTriangle size={14} className="text-amber-600 mt-0.5 shrink-0" />
+                      <div className="text-xs text-amber-700 space-y-0.5">
+                        <p className="font-semibold">
+                          {zeroPriceItems.length === detailOrder.items.length
+                            ? 'Esta lista de compra aún no tiene precios.'
+                            : `${zeroPriceItems.length} insumo${zeroPriceItems.length !== 1 ? 's' : ''} sin precio.`}
+                        </p>
+                        <p>Usa <strong>Cargar / editar precios</strong> para registrar lo que pagaste en el mercado. Solo entonces podrás confirmar el resurtido.</p>
+                      </div>
+                    </div>
+                  )}
+                  {insufficient && (
+                    <div className="flex items-start gap-1.5 rounded-lg bg-red-50 border border-red-200 px-3 py-2">
+                      <AlertTriangle size={14} className="text-red-600 mt-0.5 shrink-0" />
+                      <div className="text-xs text-red-700 space-y-0.5">
+                        <p className="font-semibold">Fondos insuficientes para confirmar este resurtido.</p>
+                        <p>Costo del resurtido: <strong>{fmt(detailOrder.totalAmount)}</strong></p>
+                        <p>Balance en caja: <strong>{fmt(cashBalance)}</strong></p>
+                        <p>Faltante: <strong>{fmt(shortfall)}</strong> — registra una aportación en <strong>Caja</strong> para continuar.</p>
+                      </div>
+                    </div>
+                  )}
+                  {confirmError && (
+                    <div className="flex items-start gap-1.5 rounded-lg bg-red-50 border border-red-200 px-3 py-2">
+                      <AlertTriangle size={14} className="text-red-600 mt-0.5 shrink-0" />
+                      <p className="text-xs text-red-700">{confirmError}</p>
+                    </div>
+                  )}
+                  <div className="flex gap-2 flex-wrap">
+                    <button
+                      onClick={() => { setConfirmError(null); openEdit(detailOrder) }}
+                      className="flex items-center gap-1.5 border border-amber-300 text-amber-700 text-sm font-medium py-2 px-4 rounded-lg hover:bg-amber-50 transition-colors"
+                    >
+                      <Pencil size={14} /> Cargar / editar precios
+                    </button>
+                    <button
+                      onClick={() => { setCancelTargetId(detailOrder.id); setCancelReason('') }}
+                      disabled={cancelMut.isPending}
+                      className="flex items-center gap-1.5 border border-red-300 text-red-600 text-sm font-medium py-2 px-4 rounded-lg hover:bg-red-50 disabled:opacity-50 transition-colors"
+                    >
+                      <XCircle size={14} /> Cancelar
+                    </button>
+                    <button
+                      onClick={() => { setConfirmError(null); confirmMut.mutate(detailOrder.id) }}
+                      disabled={confirmMut.isPending || !canConfirm}
+                      className="flex-1 flex items-center justify-center gap-1.5 bg-green-600 hover:bg-green-700 text-white text-sm font-semibold py-2 px-4 rounded-lg disabled:opacity-50 transition-colors"
+                    >
+                      <CheckCircle size={14} /> {confirmMut.isPending ? 'Confirmando...' : 'Confirmar resurtido'}
+                    </button>
+                  </div>
+                </div>
+              )
+            })()}
 
             {editMode && (
               <div className="flex gap-3 mt-4">
@@ -762,6 +849,122 @@ export default function PurchaseOrders() {
               </div>
             )}
 
+          </div>
+        </div>
+      )}
+      {/* ── Quick-confirm modal ────────────────────────────────────────────── */}
+      {quickConfirmOrder && (() => {
+        const fmt2 = (n: number) => n.toLocaleString('es-MX', { style: 'currency', currency: 'MXN' })
+        const noPrices    = quickConfirmOrder.totalAmount === 0
+        const shortfall   = quickConfirmOrder.totalAmount - cashBalance
+        const noFunds     = !noPrices && shortfall > 0
+        const canProceed  = !noPrices && !noFunds
+        return (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50">
+            <div className="bg-white rounded-2xl p-6 w-full max-w-sm shadow-xl space-y-4">
+              <div className="flex items-center gap-3">
+                <div className={`w-9 h-9 rounded-full flex items-center justify-center shrink-0 ${canProceed ? 'bg-green-100' : 'bg-amber-100'}`}>
+                  <CheckCircle size={18} className={canProceed ? 'text-green-600' : 'text-amber-600'} />
+                </div>
+                <div>
+                  <h3 className="font-bold text-slate-800 text-sm">Confirmar resurtido</h3>
+                  <p className="text-xs text-slate-500">{quickConfirmOrder.folio}</p>
+                </div>
+              </div>
+
+              {noPrices && (
+                <div className="flex items-start gap-2 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                  <AlertTriangle size={14} className="text-amber-600 mt-0.5 shrink-0" />
+                  <p className="text-xs text-amber-700">
+                    Esta lista de compra no tiene precios. Abre <strong>Ver detalle → Cargar / editar precios</strong> antes de confirmar.
+                  </p>
+                </div>
+              )}
+
+              {noFunds && (
+                <div className="flex items-start gap-2 bg-red-50 border border-red-200 rounded-lg px-3 py-2">
+                  <AlertTriangle size={14} className="text-red-600 mt-0.5 shrink-0" />
+                  <div className="text-xs text-red-700 space-y-0.5">
+                    <p className="font-semibold">Fondos insuficientes.</p>
+                    <p>Costo: <strong>{fmt2(quickConfirmOrder.totalAmount)}</strong> · Disponible: <strong>{fmt2(cashBalance)}</strong></p>
+                    <p>Faltante: <strong>{fmt2(shortfall)}</strong> — registra un depósito en Caja primero.</p>
+                  </div>
+                </div>
+              )}
+
+              {canProceed && (
+                <div className="bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 space-y-1">
+                  <p className="text-xs text-slate-500">Total del resurtido</p>
+                  <p className="text-xl font-bold text-slate-800">{fmt2(quickConfirmOrder.totalAmount)}</p>
+                  <p className="text-xs text-amber-600 font-medium">⚠ Una vez confirmado, los precios son definitivos.</p>
+                </div>
+              )}
+
+              {confirmError && (
+                <div className="flex items-start gap-2 bg-red-50 border border-red-200 rounded-lg px-3 py-2">
+                  <AlertTriangle size={14} className="text-red-600 mt-0.5 shrink-0" />
+                  <p className="text-xs text-red-700">{confirmError}</p>
+                </div>
+              )}
+
+              <div className="flex gap-3">
+                <button
+                  onClick={() => { setQuickConfirmOrder(null); setConfirmError(null) }}
+                  className="flex-1 border border-slate-300 text-slate-700 text-sm py-2 rounded-lg hover:bg-slate-50"
+                >
+                  Cancelar
+                </button>
+                <button
+                  onClick={() => confirmMut.mutate(quickConfirmOrder.id)}
+                  disabled={!canProceed || confirmMut.isPending}
+                  className="flex-1 bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white text-sm font-semibold py-2 rounded-lg transition-colors"
+                >
+                  {confirmMut.isPending ? 'Confirmando...' : 'Confirmar'}
+                </button>
+              </div>
+            </div>
+          </div>
+        )
+      })()}
+
+      {/* ── Cancel confirmation modal ──────────────────────────────────────── */}
+      {cancelTargetId !== null && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50">
+          <div className="bg-white rounded-2xl p-6 w-full max-w-sm shadow-xl">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-9 h-9 rounded-full bg-red-100 flex items-center justify-center shrink-0">
+                <XCircle size={18} className="text-red-600" />
+              </div>
+              <div>
+                <h3 className="font-bold text-slate-800 text-sm">¿Cancelar lista de compra?</h3>
+                <p className="text-xs text-slate-500">Esta acción no se puede deshacer.</p>
+              </div>
+            </div>
+            <label className="text-xs font-medium text-slate-700 block mb-1">
+              Razón de cancelación <span className="text-red-500">*</span>
+            </label>
+            <textarea
+              value={cancelReason}
+              onChange={(e) => setCancelReason(e.target.value)}
+              placeholder="Ej: Se canceló el pedido al proveedor, precios fuera de presupuesto..."
+              rows={3}
+              className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm resize-none focus:outline-none focus:border-red-400 mb-4"
+            />
+            <div className="flex gap-3">
+              <button
+                onClick={() => { setCancelTargetId(null); setCancelReason('') }}
+                className="flex-1 border border-slate-300 text-slate-700 text-sm py-2 rounded-lg hover:bg-slate-50"
+              >
+                Volver
+              </button>
+              <button
+                onClick={() => cancelMut.mutate({ id: cancelTargetId, reason: cancelReason.trim() })}
+                disabled={cancelReason.trim().length < 3 || cancelMut.isPending}
+                className="flex-1 bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white text-sm font-semibold py-2 rounded-lg transition-colors"
+              >
+                {cancelMut.isPending ? 'Cancelando...' : 'Confirmar cancelación'}
+              </button>
+            </div>
           </div>
         </div>
       )}

@@ -73,6 +73,11 @@ export const autoGenerate = (cartId: number) =>
     params: { cartId },
   }).then((r) => r.data)
 
+export const fullLoadRequisition = (cartId: number) =>
+  client.post<RequisitionResponse>('/api/requisitions/full-load', null, {
+    params: { cartId },
+  }).then((r) => r.data)
+
 export const approveRequisition = (
   id: number,
   data: { approvedQuantities: Record<number, number>; adminNotes?: string },
